@@ -7,6 +7,14 @@ from .filter import FilterActionBase
 
 @register_action('ls', 'show job infos in compact format')
 class DefaultAction(FilterActionBase):
+    max_len = 20
+
+    @staticmethod
+    def shorten(text, max_len=20):
+        if len(text) > max_len:
+            return text[:max_len - 3] + '...'
+        return text
+
     def main(self, args):
         info = full_info(self.ids, self.filters)
         if not info:
@@ -19,12 +27,12 @@ class DefaultAction(FilterActionBase):
                 'gpus': i.get('gpus_required', 0),
                 'slots': i.get('slots_required', 0),
                 'time': i.get('time_run', ''),
-                'command': i['command'],
+                'command': self.shorten(i['command'], self.max_len),
             }
             for j, i in info.items()]
         table = tabulate.tabulate(
-            info, headers='keys', tablefmt='rounded_outline', maxcolwidths=20)
-        print(tabulate.__version__)
+            info, headers='keys', tablefmt='rounded_outline',
+            maxcolwidths=self.max_len)
         print(table)
 
 
