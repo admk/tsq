@@ -18,7 +18,7 @@ class DefaultAction(FilterActionBase):
                 'status': i['status'],
                 'gpus': i.get('gpus_required', 0),
                 'slots': i.get('slots_required', 0),
-                'time': i['time_run'],
+                'time': i.get('time_run', ''),
                 'command': i['command'],
             }
             for j, i in info.items()]
