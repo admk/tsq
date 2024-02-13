@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "task-spooler-utils"
+version = "0.0.1"
+authors = [
+  { name="admk" },
+]
+description = "A Task Spooler Swiss Army Knife"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "tqdm",
+    "tabulate >= 0.9.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.scripts]
+tsu = "tsu.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/admk/tsu"
+Issues = "https://github.com/admk/tsu/issues"
+
+[tool.setuptools.packages.find]
+include = ["tsu"]
