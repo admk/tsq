@@ -6,12 +6,12 @@ from .base import ActionBase
 
 @dataclass
 class FilterArgs:
-    force_all: bool
-    running: bool
-    allocating: bool
-    success: bool
-    failed: bool
-    killed: bool
+    force_all: bool = False
+    running: bool = False
+    allocating: bool = False
+    success: bool = False
+    failed: bool = False
+    killed: bool = False
 
     @property
     def all(self):

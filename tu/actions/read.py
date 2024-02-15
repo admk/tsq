@@ -1,7 +1,7 @@
 import textwrap
+import functools
 
-import tabulate
-
+from ..utils import timedelta_format
 from ..wrapper import job_info, full_info, output
 from .base import register_action
 from .filter import FilterActionBase
@@ -9,33 +9,72 @@ from .filter import FilterActionBase
 
 @register_action('ls', 'show job infos in compact format')
 class ListAction(FilterActionBase):
+    options = {
+        ('-l', '--length'): {
+            'type': int,
+            'default': 30,
+            'help': 'Max length for each column.',
+        },
+        ('-c', '--columns'): {
+            'type': str,
+            'default': 'id,status,start,time,command',
+            'help':
+                'Columns to display, separated by commas.'
+                'Available columns: '
+                'id, status, slots, gpus, enqueue, start, end, time, command.'
+        },
+        ('-t', '--table-format'): {
+            'type': str,
+            'default': 'rounded_outline',
+            'help': 'The format of the table.',
+        }
+    }
     def add_arguments(self, parser):
         super().add_arguments(parser)
-        parser.add_argument(
-            '-l', '--length', type=int, default=30,
-            help='Max length for each column.')
+        for option, kwargs in self.options.items():
+            parser.add_argument(*option, **kwargs)
 
     @staticmethod
     def shorten(text, max_len):
         return textwrap.shorten(text, width=max_len, placeholder='...')
 
     def main(self, args):
+        import tabulate
         info = full_info(self.ids, self.filters)
         if not info:
             print('No jobs found.')
             return
         rows = []
+        columns = [c.lower() for c in args.columns.split(',')]
         for i in info:
-            rows.append({
-                'id': i['id'],
-                'status': i['status'],
-                'gpus': i.get('gpus_required', 0),
-                'slots': i.get('slots_required', 0),
-                'time': i.get('time_run', ''),
-                'command': self.shorten(i['command'], args.length),
-            })
+            enqueue_time = i['enqueue_time'].strftime('%m-%d %H:%M')
+            try:
+                start_time = i['start_time'].strftime('%m-%d %H:%M')
+            except KeyError:
+                start_time = ''
+            try:
+                end_time = i['end_time'].strftime('%m-%d %H:%M')
+            except KeyError:
+                end_time = ''
+            try:
+                time_run = timedelta_format(i['time_run'], 'wdhms', 2)
+            except KeyError:
+                time_run = ''
+            row = {
+                'ID': i['id'],
+                'Status': i['status'],
+                'Slots': i.get('slots_required', 1),
+                'GPUs': i.get('gpus_required', 0),
+                'GPU IDs': i.get('gpu_ids', ''),
+                'Enqueue': enqueue_time,
+                'Start': start_time,
+                'End': end_time,
+                'Time': time_run,
+                'Command': self.shorten(i['command'], args.length),
+            }
+            rows.append({k: v for k, v in row.items() if k.lower() in columns})
         table = tabulate.tabulate(
-            rows, headers='keys', tablefmt='rounded_outline')
+            rows, headers='keys', tablefmt=args.table_format)
         print(table)
 
 
@@ -76,25 +115,35 @@ class CommandsAction(FilterActionBase):
             if args.no_job_ids:
                 print(i['command'])
             else:
-                print(f'{i["id"]}: {i["command"]}')
+                print(f"{i['id']}: {i['command']}")
 
 
 @register_action('export', 'show job infos in machine-readable format')
 class ExportAction(FilterActionBase):
+    options = {
+        ('-e', '--export-format'): {
+            'choices': ['json', 'yaml', 'toml'],
+            'default': 'json',
+            'help': 'The format of the output.',
+        },
+        ('-t', '--tail'): {
+            'action': 'store_true',
+            'help': '"tail -n 10 -f" the output of the job.',
+        },
+    }
     def add_arguments(self, parser):
         super().add_arguments(parser)
-        parser.add_argument(
-            '-e', '--export-format', choices=['json', 'yaml', 'toml'],
-            default='json', help='The format of the output.')
-        parser.add_argument(
-            '-t', '--tail', action='store_true',
-            help='"tail -n 10 -f" the output of the job.')
+        for option, kwargs in self.options.items():
+            parser.add_argument(*option, **kwargs)
+
+    def extra_func(self, i, args):
+        i['time_run'] = i['time_run'].total_seconds()
+        if args.tail:
+            i['output'] = output(i['id'], tail=True)
 
     def main(self, args):
-        info = full_info(self.ids, self.filters)
-        if args.tail:
-            for i in info:
-                i['output'] = output(i['id'], tail=True)
+        extra_func = functools.partial(self.extra_func, args=args)
+        info = full_info(self.ids, self.filters, extra_func=extra_func)
         if args.export_format == 'json':
             import json
             print(json.dumps(info, indent=4, default=str))
@@ -103,7 +152,9 @@ class ExportAction(FilterActionBase):
             print(yaml.dump(info, default_flow_style=False))
         elif args.export_format == 'toml':
             import toml
-            print(toml.dumps({'jobs': info}))
+            print(toml.dumps({'job': info}))
+        else:
+            raise ValueError(f'Unknown format: {args.export_format}')
 
 
 @register_action('outputs', 'Show job outputs')

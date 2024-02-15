@@ -28,7 +28,7 @@ def job_info(ids, filters):
     for l in _ts().splitlines()[1:]:
         l = l.strip().split()
         if l[1] == 'finished':
-            job_id, status, _, exitcode, gpus, *_ = l
+            job_id, status, _, exitcode, *_ = l
             exitcode = int(exitcode)
             if exitcode == 0:
                 status = 'success'
@@ -37,12 +37,11 @@ def job_info(ids, filters):
             else:
                 status = 'failed'
         else:
-            job_id, status, _, gpus, *_ = l
+            job_id, status, *_ = l
             exitcode = None
         info.append({
             'id': int(job_id),
             'status': status,
-            'gpus': gpus,
             'exitcode': exitcode
         })
     if not filters.all:
@@ -55,7 +54,7 @@ def job_info(ids, filters):
     return info
 
 
-def full_info(ids, filters):
+def full_info(ids, filters, extra_func=None):
     def get_line(ji, key):
         for l in ji.splitlines():
             if key in l:
@@ -75,21 +74,29 @@ def full_info(ids, filters):
         return time
 
     info = job_info(ids, filters)
-    for i in info:
+    for i in tqdm(info, delay=5):
         ji = _ts('-i', i['id'])
+        start_time = get_time(ji, 'Start time: ')
+        end_time = get_time(ji, 'End time: ')
+        if not start_time:
+            delta = None
+        elif not end_time:
+            delta = datetime.datetime.now() - start_time
+        else:
+            delta = end_time - start_time
         new_info = {
             'command': get_line(ji, 'Command: '),
             'slots_required': int(get_line(ji, 'Slots required: ') or 1),
             'gpus_required': int(get_line(ji, 'GPUs required: ') or 0),
             'gpu_ids': get_line(ji, 'GPU IDs: '),
             'enqueue_time': get_time(ji, 'Enqueue time: '),
-            'start_time': get_time(ji, 'Start time: '),
-            'end_time': get_time(ji, 'End time: '),
-            'time_run':
-                get_time_run(ji, 'Time running: ') or
-                get_time_run(ji, 'Time run: '),
+            'start_time': start_time,
+            'end_time': end_time,
+            'time_run': delta,
         }
         i.update({k: v for k, v in new_info.items() if v is not None})
+        if extra_func:
+            extra_func(i)
     return info
 
 
