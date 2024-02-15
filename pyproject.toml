@@ -22,11 +22,11 @@ classifiers = [
 ]
 
 [project.scripts]
-tu = "tsu.cli:main"
+tu = "tu.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/admk/tsu"
-Issues = "https://github.com/admk/tsu/issues"
+Homepage = "https://github.com/admk/tu"
+Issues = "https://github.com/admk/tu/issues"
 
 [tool.setuptools.packages.find]
-include = ["tsu"]
+include = ["tu"]
