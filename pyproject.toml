@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "task-spooler-utils"
-version = "0.0.2"
+version = "0.0.3"
 authors = [
   { name="admk" },
 ]
@@ -29,4 +29,4 @@ Homepage = "https://github.com/admk/tu"
 Issues = "https://github.com/admk/tu/issues"
 
 [tool.setuptools.packages.find]
-include = ["tu"]
+include = ["tu", "tu.*"]
