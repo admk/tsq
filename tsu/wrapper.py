@@ -24,11 +24,11 @@ def _ts(*args, commit=True):
 
 
 def job_info(ids, filters):
-    info = {}
+    info = []
     for l in _ts().splitlines()[1:]:
         l = l.strip().split()
         if l[1] == 'finished':
-            id, status, _, exitcode, gpus, *_ = l
+            job_id, status, _, exitcode, gpus, *_ = l
             exitcode = int(exitcode)
             if exitcode == 0:
                 status = 'success'
@@ -37,20 +37,22 @@ def job_info(ids, filters):
             else:
                 status = 'failed'
         else:
-            id, status, _, gpus, *_ = l
+            job_id, status, _, gpus, *_ = l
             exitcode = None
-        info[int(id)] = {
+        info.append({
+            'id': int(job_id),
             'status': status,
             'gpus': gpus,
             'exitcode': exitcode
-        }
+        })
     if not filters.all:
         for a in STATUSES:
-            if not getattr(filters, a):
-                info = {k: v for k, v in info.items() if v['status'] != a}
+            if getattr(filters, a):
+                continue
+            info = [i for i in info if i['status'] != a]
     if ids:
-        info = {k: v for k, v in info.items() if k in ids}
-    return {k: info[k] for k in sorted(info)}
+        info = [i for i in info if i['id'] in ids]
+    return info
 
 
 def full_info(ids, filters):
@@ -74,7 +76,7 @@ def full_info(ids, filters):
 
     info = job_info(ids, filters)
     for i in info:
-        ji = _ts('-i', i)
+        ji = _ts('-i', i['id'])
         new_info = {
             'command': get_line(ji, 'Command: '),
             'slots_required': int(get_line(ji, 'Slots required: ') or 1),
@@ -87,8 +89,14 @@ def full_info(ids, filters):
                 get_time_run(ji, 'Time running: ') or
                 get_time_run(ji, 'Time run: '),
         }
-        info[i].update({k: v for k, v in new_info.items() if v is not None})
+        i.update({k: v for k, v in new_info.items() if v is not None})
     return info
+
+
+def output(id, tail=True):
+    if tail:
+        return _ts('-t', id)
+    return _ts('-c', id)
 
 
 def add(command, gpus, slots, commit=True):
