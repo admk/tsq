@@ -1,5 +1,11 @@
+import time
+from datetime import datetime
+import platform
+
+import tabulate
 import textwrap
 import functools
+from blessed import Terminal
 
 from ..utils import timedelta_format
 from ..wrapper import job_info, full_info, output
@@ -29,8 +35,14 @@ class ListAction(FilterActionBase):
             'type': str,
             'default': 'rounded_outline',
             'help': 'The format of the table.',
+        },
+        ('-n', '--interval'): {
+            'type': int,
+            'default': None,
+            'help': 'Refresh interval in seconds.',
         }
     }
+
     def add_arguments(self, parser):
         super().add_arguments(parser)
         for option, kwargs in self.options.items():
@@ -40,8 +52,7 @@ class ListAction(FilterActionBase):
     def shorten(text, max_len):
         return textwrap.shorten(text, width=max_len, placeholder='...')
 
-    def main(self, args):
-        import tabulate
+    def format(self, args):
         info = full_info(self.ids, self.filters)
         if not info:
             print('No jobs found.')
@@ -79,7 +90,34 @@ class ListAction(FilterActionBase):
                 if k.replace(' ', '_').lower() in columns})
         table = tabulate.tabulate(
             rows, headers='keys', tablefmt=args.table_format)
-        print(table)
+        return table
+
+    def loop(self, args):
+        term = Terminal()
+        with term.hidden_cursor(), term.fullscreen():
+            while True:
+                try:
+                    query_start = time.time()
+                    print(term.move(0, 0), end='')
+                    dt = datetime.fromtimestamp(query_start)
+                    print(f'{platform.node()}\t\t\t{dt:%Y-%m-%d %H:%M:%S}')
+                    table = self.format(args)
+                    if table:
+                        print(table, end=term.clear_eol)
+                    print(term.clear_eos, end='')
+                    query_duration = time.time() - query_start
+                    sleep_duration = args.interval - query_duration
+                    if sleep_duration > 0:
+                        time.sleep(sleep_duration)
+                except KeyboardInterrupt:
+                    return 0
+
+    def main(self, args):
+        if args.interval:
+            return self.loop(args)
+        table = self.format(args)
+        if table:
+            print(table)
 
 
 @register_action('ids', help='show job IDs', aliases=['id'])
