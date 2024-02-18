@@ -8,10 +8,6 @@ from .filter import FilterActionBase
 
 
 class WriteActionBase(FilterActionBase, DryActionBase):
-    def add_arguments(self, parser):
-        DryActionBase.add_arguments(self, parser)
-        FilterActionBase.add_arguments(self, parser)
-
     def transform_args(self, args):
         args = DryActionBase.transform_args(self, args)
         args = FilterActionBase.transform_args(self, args)

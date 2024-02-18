@@ -1,6 +1,8 @@
+import sys
 import time
-from datetime import datetime
 import platform
+from datetime import datetime
+from abc import abstractmethod
 
 import tabulate
 import textwrap
@@ -13,11 +15,56 @@ from .base import register_action
 from .filter import FilterActionBase
 
 
+class ReadActionBase(FilterActionBase):
+    read_options = {
+        ('-n', '--interval'): {
+            'type': int,
+            'default': None,
+            'help': 'Refresh interval in seconds.',
+        },
+    }
+
+    def __init__(self, name, parser_kwargs):
+        super().__init__(name, parser_kwargs)
+        self.options |= self.read_options
+
+    @abstractmethod
+    def format(self, args):
+        raise NotImplementedError
+
+    def loop(self, args):
+        term = Terminal()
+        with term.hidden_cursor(), term.fullscreen():
+            while True:
+                try:
+                    query_start = time.time()
+                    print(term.move(0, 0), end='')
+                    dt = datetime.fromtimestamp(query_start)
+                    print(f'{platform.node()}\t\t\t{dt:%Y-%m-%d %H:%M:%S}')
+                    output = self.format(args)
+                    if output:
+                        print(output, end=term.clear_eol)
+                    print(term.clear_eos, end='')
+                    sys.stdout.flush()
+                    query_duration = time.time() - query_start
+                    sleep_duration = args.interval - query_duration
+                    if sleep_duration > 0:
+                        time.sleep(sleep_duration)
+                except KeyboardInterrupt:
+                    return 0
+
+    def main(self, args):
+        if args.interval is not None:
+            return self.loop(args)
+        print(self.format(args))
+        return 0
+
+
 @register_action(
     'list', 'show job infos in compact format',
     aliases=['ls'], default=True)
-class ListAction(FilterActionBase):
-    options = {
+class ListAction(ReadActionBase):
+    list_options = {
         ('-l', '--length'): {
             'type': int,
             'default': 30,
@@ -36,17 +83,11 @@ class ListAction(FilterActionBase):
             'default': 'rounded_outline',
             'help': 'The format of the table.',
         },
-        ('-n', '--interval'): {
-            'type': int,
-            'default': None,
-            'help': 'Refresh interval in seconds.',
-        }
     }
 
-    def add_arguments(self, parser):
-        super().add_arguments(parser)
-        for option, kwargs in self.options.items():
-            parser.add_argument(*option, **kwargs)
+    def __init__(self, name, parser_kwargs):
+        super().__init__(name, parser_kwargs)
+        self.options |= self.list_options
 
     @staticmethod
     def shorten(text, max_len):
@@ -55,8 +96,7 @@ class ListAction(FilterActionBase):
     def format(self, args):
         info = full_info(self.ids, self.filters)
         if not info:
-            print('No jobs found.')
-            return
+            return 'No jobs found.'
         rows = []
         columns = [c.lower() for c in args.columns.split(',')]
         for i in info:
@@ -92,77 +132,57 @@ class ListAction(FilterActionBase):
             rows, headers='keys', tablefmt=args.table_format)
         return table
 
-    def loop(self, args):
-        term = Terminal()
-        with term.hidden_cursor(), term.fullscreen():
-            while True:
-                try:
-                    query_start = time.time()
-                    print(term.move(0, 0), end='')
-                    dt = datetime.fromtimestamp(query_start)
-                    print(f'{platform.node()}\t\t\t{dt:%Y-%m-%d %H:%M:%S}')
-                    table = self.format(args)
-                    if table:
-                        print(table, end=term.clear_eol)
-                    print(term.clear_eos, end='')
-                    query_duration = time.time() - query_start
-                    sleep_duration = args.interval - query_duration
-                    if sleep_duration > 0:
-                        time.sleep(sleep_duration)
-                except KeyboardInterrupt:
-                    return 0
-
-    def main(self, args):
-        if args.interval:
-            return self.loop(args)
-        table = self.format(args)
-        if table:
-            print(table)
-
 
 @register_action('ids', help='show job IDs', aliases=['id'])
-class IdsAction(FilterActionBase):
-    def main(self, args):
+class IdsAction(ReadActionBase):
+    def format(self, args):
         jobs = job_info(self.ids, self.filters)
-        for i in jobs:
-            print(i)
+        return ', '.join(str(i['id']) for i in jobs)
 
 
 @register_action('info', 'show job infos')
-class InfoAction(FilterActionBase):
-    def main(self, args):
+class InfoAction(ReadActionBase):
+    def format(self, args):
         info = full_info(self.ids, self.filters)
         if not info:
-            print('No jobs found.')
-            return
+            return 'No jobs found.'
+        outputs = []
         for i in info:
-            print(f'Job {i["id"]}:')
+            outputs.append(f'Job {i["id"]}:')
             for k, v in i.items():
                 if k == 'id':
                     continue
-                print(f'  {k}: {v}')
+                outputs.append(f'  {k}: {v}')
+        return '\n'.join(outputs)
 
 
 @register_action('commands', 'show job commands', aliases=['cmd'])
-class CommandsAction(FilterActionBase):
-    def add_arguments(self, parser):
-        super().add_arguments(parser)
-        parser.add_argument(
-            '-n', '--no-job-ids', action='store_true',
-            help='Do not print the job ID before the command.')
+class CommandsAction(ReadActionBase):
+    commands_options = {
+        ('-j', '--no-job-ids'): {
+            'action': 'store_true',
+            'help': 'Do not print the job ID before the command.',
+        },
+    }
 
-    def main(self, args):
+    def __init__(self, name, parser_kwargs):
+        super().__init__(name, parser_kwargs)
+        self.options |= self.commands_options
+
+    def format(self, args):
         info = full_info(self.ids, self.filters)
+        outputs = []
         for i in info:
             if args.no_job_ids:
-                print(i['command'])
+                outputs.append(i['command'])
             else:
-                print(f"{i['id']}: {i['command']}")
+                outputs.append(f"{i['id']}: {i['command']}")
+        return '\n'.join(outputs)
 
 
 @register_action('export', 'show job infos in machine-readable format')
-class ExportAction(FilterActionBase):
-    options = {
+class ExportAction(ReadActionBase):
+    export_options = {
         ('-e', '--export-format'): {
             'choices': ['json', 'yaml', 'toml'],
             'default': 'json',
@@ -173,50 +193,58 @@ class ExportAction(FilterActionBase):
             'help': '"tail -n 10 -f" the output of the job.',
         },
     }
-    def add_arguments(self, parser):
-        super().add_arguments(parser)
-        for option, kwargs in self.options.items():
-            parser.add_argument(*option, **kwargs)
+
+    def __init__(self, name, parser_kwargs):
+        super().__init__(name, parser_kwargs)
+        self.options |= self.export_options
 
     def extra_func(self, i, args):
         i['time_run'] = i['time_run'].total_seconds()
         if args.tail:
             i['output'] = output(i['id'], tail=True)
 
-    def main(self, args):
+    def format(self, args):
         extra_func = functools.partial(self.extra_func, args=args)
         info = full_info(self.ids, self.filters, extra_func=extra_func)
         if args.export_format == 'json':
             import json
-            print(json.dumps(info, indent=4, default=str))
+            return json.dumps(info, indent=4, default=str)
         elif args.export_format == 'yaml':
             import yaml
-            print(yaml.dump(info, default_flow_style=False))
+            return yaml.dump(info, default_flow_style=False)
         elif args.export_format == 'toml':
             import toml
-            print(toml.dumps({'job': info}))
+            return toml.dumps({'job': info})
         else:
             raise ValueError(f'Unknown format: {args.export_format}')
 
 
 @register_action('outputs', 'Show job outputs', aliases=['out'])
-class OutputsAction(FilterActionBase):
-    def add_arguments(self, parser):
-        super().add_arguments(parser)
-        parser.add_argument(
-            '-n', '--lines', type=int, default=10, help='Number of lines.')
-        parser.add_argument(
-            '-R', '--raw', action='store_true', help='Do not format lines.')
-        parser.add_argument(
-            '-j', '--json', action='store_true', help='Export in JSON format.')
+class OutputsAction(ReadActionBase):
+    outputs_options = {
+        ('-l', '--lines'): {
+            'type': int,
+            'default': 10,
+            'help': 'Number of lines.',
+        },
+        ('-R', '--raw'): {
+            'action': 'store_true',
+            'help': 'Do not format lines.',
+        },
+    }
 
-    def main(self, args):
+    def __init__(self, name, parser_kwargs):
+        super().__init__(name, parser_kwargs)
+        self.options |= self.outputs_options
+
+    def format(self, args):
         info = job_info(self.ids, self.filters)
+        outputs = []
         for i in info:
-            print(f'Job {i["id"]}:')
+            outputs.append(f'Job {i["id"]}:')
             out = output(i['id'])
             if not args.raw:
                 out = '\n'.join(textwrap.wrap(out, width=80))
-                out = textwrap.indent(out, '| ')
-            print(out)
-            print()
+                out = textwrap.indent(out, '> ') + '\n'
+            outputs.append(out)
+        return '\n'.join(outputs)

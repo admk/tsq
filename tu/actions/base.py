@@ -7,10 +7,13 @@ class ActionBase:
 
     def __init__(self, name, parser_kwargs):
         super().__init__()
+        self.options = {}
+        self.name = name
         self.parser_kwargs = parser_kwargs
 
     def add_arguments(self, parser):
-        pass
+        for option, kwargs in self.options.items():
+            parser.add_argument(*option, **kwargs)
 
     def transform_args(self, args):
         return args
@@ -25,12 +28,18 @@ class ActionBase:
 
 
 class DryActionBase(ActionBase):
-    def add_arguments(self, parser):
-        help_message = (
-            'Do not actually perform the action, '
-            'just print what would be done.')
-        parser.add_argument(
-            '-d', '--dry-run', action='store_true', help=help_message)
+    dry_options = {
+        ('-d', '--dry-run'): {
+            'action': 'store_true',
+            'help': (
+                'Do not actually perform the action, '
+                'just print what would be done.'),
+        },
+    }
+
+    def __init__(self, name, parser_kwargs):
+        super().__init__(name, parser_kwargs)
+        self.options |= self.dry_options
 
     def transform_args(self, args):
         args = super().transform_args(args)

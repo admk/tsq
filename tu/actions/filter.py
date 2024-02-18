@@ -55,9 +55,9 @@ class FilterActionBase(ActionBase):
         },
     }
 
-    def add_arguments(self, parser):
-        for option, kwargs in self.filter_options.items():
-            parser.add_argument(*option, **kwargs)
+    def __init__(self, name, parser_kwargs):
+        super().__init__(name, parser_kwargs)
+        self.options |= self.filter_options
 
     def _parse_ids(self, args):
         if not args.id:
