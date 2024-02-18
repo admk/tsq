@@ -21,7 +21,7 @@ class WriteActionBase(FilterActionBase, DryActionBase):
         return args
 
 
-@register_action('remove', 'remove jobs')
+@register_action('remove', 'remove jobs', aliases=['rm'])
 class RemoveAction(WriteActionBase):
     def remove(self, ids, commit):
         for i in tqdm(ids):
@@ -38,7 +38,7 @@ class RemoveAction(WriteActionBase):
         print('Removed:', ', '.join(str(i) for i in removed_ids))
 
 
-@register_action('rerun', 'rerun jobs')
+@register_action('rerun', 'rerun jobs', aliases=['rr'])
 class RerunAction(WriteActionBase):
     def rerun(self, info, commit):
         reran_ids = []
@@ -59,7 +59,7 @@ class RerunAction(WriteActionBase):
         print('Reran:', ', '.join(str(i) for i in reran_ids))
 
 
-@register_action('requeue', 'requeue jobs')
+@register_action('requeue', 'requeue jobs', aliases=['rq'])
 class RequeueAction(RerunAction, RemoveAction):
     def main(self, args):
         info = full_info(self.ids, self.filters)

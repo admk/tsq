@@ -4,12 +4,10 @@ from abc import abstractmethod
 
 class ActionBase:
     name = NotImplemented
-    help = NotImplemented
 
-    def __init__(self, name, help_message):
+    def __init__(self, name, parser_kwargs):
         super().__init__()
-        self.name = name
-        self.help = help_message
+        self.parser_kwargs = parser_kwargs
 
     def add_arguments(self, parser):
         pass
@@ -40,16 +38,28 @@ class DryActionBase(ActionBase):
         return args
 
 
-DEFAULT_ACTION = 'ls'
-ACTIONS = {}
+INFO = {
+    'default': None,
+    'actions': {},
+    'aliases': {},
+}
 
-def register_action(name, help_message, default=False):
+
+def register_action(name, help=None, aliases=(), default=False):
     def decorator(cls):
-        if name in ACTIONS:
+        if name in INFO['actions']:
             raise ValueError(f'Action {name!r} already registered.')
-        ACTIONS[name] = cls(name, help_message)
+        kwargs = {
+            'name': name,
+            'help': help,
+            'aliases': aliases,
+        }
+        INFO['actions'][name] = cls(name, kwargs)
+        INFO['aliases'].update({a: name for a in list(aliases) + [name]})
         if default:
-            global DEFAULT_ACTION
-            DEFAULT_ACTION = name
+            if INFO['default'] is not None:
+                raise ValueError(
+                    f'Default action already set to {INFO["default"]!r}.')
+            INFO['default'] = name
         return cls
     return decorator

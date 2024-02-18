@@ -7,7 +7,9 @@ from .base import register_action
 from .filter import FilterActionBase
 
 
-@register_action('ls', 'show job infos in compact format', default=True)
+@register_action(
+    'list', 'show job infos in compact format',
+    aliases=['ls'], default=True)
 class ListAction(FilterActionBase):
     options = {
         ('-l', '--length'): {
@@ -80,7 +82,7 @@ class ListAction(FilterActionBase):
         print(table)
 
 
-@register_action('ids', 'show job IDs')
+@register_action('ids', help='show job IDs', aliases=['id'])
 class IdsAction(FilterActionBase):
     def main(self, args):
         jobs = job_info(self.ids, self.filters)
@@ -103,7 +105,7 @@ class InfoAction(FilterActionBase):
                 print(f'  {k}: {v}')
 
 
-@register_action('commands', 'show job commands')
+@register_action('commands', 'show job commands', aliases=['cmd'])
 class CommandsAction(FilterActionBase):
     def add_arguments(self, parser):
         super().add_arguments(parser)
@@ -159,7 +161,7 @@ class ExportAction(FilterActionBase):
             raise ValueError(f'Unknown format: {args.export_format}')
 
 
-@register_action('outputs', 'Show job outputs')
+@register_action('outputs', 'Show job outputs', aliases=['out'])
 class OutputsAction(FilterActionBase):
     def add_arguments(self, parser):
         super().add_arguments(parser)

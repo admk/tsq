@@ -1,4 +1,4 @@
 from .read import *
 from .write import *
 from .add import *
-from .base import ACTIONS, DEFAULT_ACTION
+from .base import INFO

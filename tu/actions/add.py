@@ -11,7 +11,7 @@ from .base import register_action, DryActionBase
 from .filter import FilterArgs
 
 
-@register_action('add', 'add jobs')
+@register_action('add', 'add jobs', aliases=['a'])
 class AddAction(DryActionBase):
     add_options = {
         ('-G', '--gpus'): {
