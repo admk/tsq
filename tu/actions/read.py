@@ -19,9 +19,9 @@ class ListAction(FilterActionBase):
             'type': str,
             'default': 'id,status,start,time,command',
             'help':
-                'Columns to display, separated by commas.'
-                'Available columns: '
-                'id, status, slots, gpus, enqueue, start, end, time, command.'
+                'Columns to display, separated by commas. Available columns: '
+                'id, status, slots, gpus, gpu_ids, '
+                'enqueue, start, end, time, command.'
         },
         ('-t', '--table-format'): {
             'type': str,
@@ -72,7 +72,9 @@ class ListAction(FilterActionBase):
                 'Time': time_run,
                 'Command': self.shorten(i['command'], args.length),
             }
-            rows.append({k: v for k, v in row.items() if k.lower() in columns})
+            rows.append({
+                k: v for k, v in row.items()
+                if k.replace(' ', '_').lower() in columns})
         table = tabulate.tabulate(
             rows, headers='keys', tablefmt=args.table_format)
         print(table)
