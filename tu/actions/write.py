@@ -31,18 +31,19 @@ class RemoveAction(WriteActionBase):
 
     def main(self, args):
         info = job_info(self.ids, self.filters)
-        removed_ids = self.remove(info, args.commit)
+        ids = [i['id'] for i in info]
+        removed_ids = self.remove(ids, args.commit)
         print('Removed:', ', '.join(str(i) for i in removed_ids))
 
 
 @register_action('rerun', 'rerun jobs')
 class RerunAction(WriteActionBase):
     def rerun(self, info, commit):
-        iterer = tqdm(info.items(), commit=commit)
+        iterer = tqdm(info, commit=commit)
         reran_ids = []
-        for j, i in iterer:
-            reran_ids += [j]
-            iterer.set_description(f'Requeueing {j}')
+        for i in iterer:
+            reran_ids += [i['id']]
+            iterer.set_description(f'Requeueing {i["id"]}')
             command = i['command']
             gpus = i['gpus_required']
             slots = i['slots_required']
@@ -60,5 +61,5 @@ class RequeueAction(RerunAction, RemoveAction):
     def main(self, args):
         info = full_info(self.ids, self.filters)
         reran_ids = self.rerun(info, args.commit)
-        self.remove(info, args.commit)
+        self.remove(reran_ids, args.commit)
         print('Requeued:', ', '.join(str(i) for i in reran_ids))
