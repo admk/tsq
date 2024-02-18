@@ -1,6 +1,7 @@
 import sys
 
-from ..wrapper import tqdm, job_info, full_info, add, remove
+from ..common import tqdm
+from ..wrapper import job_info, full_info, add, remove
 from .base import register_action, DryActionBase
 from .filter import FilterActionBase
 
@@ -23,15 +24,16 @@ class WriteActionBase(FilterActionBase, DryActionBase):
 @register_action('remove', 'remove jobs')
 class RemoveAction(WriteActionBase):
     def remove(self, ids, commit):
-        iterer = tqdm(ids, commit=commit)
-        for i in iterer:
-            iterer.set_description(f'Removing {i}')
+        for i in tqdm(ids):
             remove(i, commit=commit)
         return ids
 
     def main(self, args):
         info = job_info(self.ids, self.filters)
         ids = [i['id'] for i in info]
+        if not ids:
+            print('No job to remove.')
+            return
         removed_ids = self.remove(ids, args.commit)
         print('Removed:', ', '.join(str(i) for i in removed_ids))
 
@@ -39,11 +41,9 @@ class RemoveAction(WriteActionBase):
 @register_action('rerun', 'rerun jobs')
 class RerunAction(WriteActionBase):
     def rerun(self, info, commit):
-        iterer = tqdm(info, commit=commit)
         reran_ids = []
-        for i in iterer:
+        for i in tqdm(info):
             reran_ids += [i['id']]
-            iterer.set_description(f'Requeueing {i["id"]}')
             command = i['command']
             gpus = i['gpus_required']
             slots = i['slots_required']
@@ -52,6 +52,9 @@ class RerunAction(WriteActionBase):
 
     def main(self, args):
         info = full_info(self.ids, self.filters)
+        if not info:
+            print('No job to rerun.')
+            return
         reran_ids = self.rerun(info, args.commit)
         print('Reran:', ', '.join(str(i) for i in reran_ids))
 
@@ -60,6 +63,9 @@ class RerunAction(WriteActionBase):
 class RequeueAction(RerunAction, RemoveAction):
     def main(self, args):
         info = full_info(self.ids, self.filters)
+        if not info:
+            print('No job to requeue.')
+            return
         reran_ids = self.rerun(info, args.commit)
         self.remove(reran_ids, args.commit)
         print('Requeued:', ', '.join(str(i) for i in reran_ids))

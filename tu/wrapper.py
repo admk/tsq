@@ -1,24 +1,15 @@
-import sys
 import shlex
 import datetime
 import subprocess
 
-from tqdm import tqdm as tqdm_
-
-
-def tqdm(*args, commit=True, **kwargs):
-    disable = not commit or not sys.stdout.isatty()
-    return tqdm_(*args, **kwargs, disable=disable)
-
-
-STATUSES = ['running', 'allocating', 'success', 'failed', 'killed']
+from .common import tqdm, STATUSES
 
 
 def _ts(*args, commit=True):
     cmd = ['ts'] + [str(a) for a in args]
     if not commit:
         print(' '.join(cmd))
-        return
+        return None
     p = subprocess.run(cmd, capture_output=True)
     return p.stdout.decode('utf-8').strip()
 
@@ -67,14 +58,8 @@ def full_info(ids, filters, extra_func=None):
             return None
         return datetime.datetime.strptime(time, '%a %b %d %H:%M:%S %Y')
 
-    def get_time_run(ji, key):
-        time = get_line(ji, key)
-        if not time:
-            return None
-        return time
-
     info = job_info(ids, filters)
-    for i in tqdm(info, delay=5):
+    for i in tqdm(info):
         ji = _ts('-i', i['id'])
         start_time = get_time(ji, 'Start time: ')
         end_time = get_time(ji, 'End time: ')

@@ -5,7 +5,8 @@ import textwrap
 import argparse
 import itertools
 
-from ..wrapper import tqdm, full_info, add
+from ..common import tqdm
+from ..wrapper import full_info, add
 from .base import register_action, DryActionBase
 from .filter import FilterArgs
 
@@ -133,10 +134,8 @@ class AddAction(DryActionBase):
             if skipped:
                 print('Skipped:')
                 print(textwrap.indent('\n'.join(skipped), '  '))
-        iterer = tqdm(commands, commit=args.commit)
         ids = []
-        for c in iterer:
-            iterer.set_description(f'Adding {c!r}')
+        for c in tqdm(commands):
             output = add(c, args.gpus, args.slots, commit=args.commit)
             ids.append(output)
         if any(ids):
