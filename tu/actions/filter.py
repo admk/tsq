@@ -57,7 +57,7 @@ class FilterActionBase(ActionBase):
 
     def __init__(self, name, parser_kwargs):
         super().__init__(name, parser_kwargs)
-        self.options |= self.filter_options
+        self.options.update(self.filter_options)
 
     def _parse_ids(self, args):
         if not args.id:

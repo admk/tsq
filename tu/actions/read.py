@@ -26,7 +26,7 @@ class ReadActionBase(FilterActionBase):
 
     def __init__(self, name, parser_kwargs):
         super().__init__(name, parser_kwargs)
-        self.options |= self.read_options
+        self.options.update(self.read_options)
 
     @abstractmethod
     def format(self, args):
@@ -87,7 +87,7 @@ class ListAction(ReadActionBase):
 
     def __init__(self, name, parser_kwargs):
         super().__init__(name, parser_kwargs)
-        self.options |= self.list_options
+        self.options.update(self.list_options)
 
     @staticmethod
     def shorten(text, max_len):
@@ -167,7 +167,7 @@ class CommandsAction(ReadActionBase):
 
     def __init__(self, name, parser_kwargs):
         super().__init__(name, parser_kwargs)
-        self.options |= self.commands_options
+        self.options.update(self.commands_options)
 
     def format(self, args):
         info = full_info(self.ids, self.filters)
@@ -196,7 +196,7 @@ class ExportAction(ReadActionBase):
 
     def __init__(self, name, parser_kwargs):
         super().__init__(name, parser_kwargs)
-        self.options |= self.export_options
+        self.options.update(self.export_options)
 
     def extra_func(self, i, args):
         i['time_run'] = i['time_run'].total_seconds()
@@ -235,7 +235,7 @@ class OutputsAction(ReadActionBase):
 
     def __init__(self, name, parser_kwargs):
         super().__init__(name, parser_kwargs)
-        self.options |= self.outputs_options
+        self.options.update(self.outputs_options)
 
     def format(self, args):
         info = job_info(self.ids, self.filters)

@@ -39,7 +39,7 @@ class DryActionBase(ActionBase):
 
     def __init__(self, name, parser_kwargs):
         super().__init__(name, parser_kwargs)
-        self.options |= self.dry_options
+        self.options.update(self.dry_options)
 
     def transform_args(self, args):
         args = super().transform_args(args)
