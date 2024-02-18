@@ -7,7 +7,7 @@ from .base import register_action
 from .filter import FilterActionBase
 
 
-@register_action('ls', 'show job infos in compact format')
+@register_action('ls', 'show job infos in compact format', default=True)
 class ListAction(FilterActionBase):
     options = {
         ('-l', '--length'): {

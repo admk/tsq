@@ -6,6 +6,11 @@ class ActionBase:
     name = NotImplemented
     help = NotImplemented
 
+    def __init__(self, name, help_message):
+        super().__init__()
+        self.name = name
+        self.help = help_message
+
     def add_arguments(self, parser):
         pass
 
@@ -35,12 +40,16 @@ class DryActionBase(ActionBase):
         return args
 
 
+DEFAULT_ACTION = 'ls'
 ACTIONS = {}
 
-def register_action(name, help_message):
+def register_action(name, help_message, default=False):
     def decorator(cls):
-        cls.name = name
-        cls.help = help_message
-        ACTIONS[name] = cls()
+        if name in ACTIONS:
+            raise ValueError(f'Action {name!r} already registered.')
+        ACTIONS[name] = cls(name, help_message)
+        if default:
+            global DEFAULT_ACTION
+            DEFAULT_ACTION = name
         return cls
     return decorator

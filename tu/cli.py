@@ -1,7 +1,7 @@
 import sys
 import argparse
 
-from .actions import ACTIONS
+from .actions import ACTIONS, DEFAULT_ACTION
 
 
 class CLI:
@@ -17,6 +17,12 @@ class CLI:
         action.add_arguments(action_parser)
 
     def main(self, args=None):
+        args = args or sys.argv[1:]
+        if all(a not in ACTIONS for a in args):
+            if '-h' in args or '--help' in args:
+                self.parser.print_help()
+                sys.exit(0)
+            args = [DEFAULT_ACTION] + args
         args = self.parser.parse_args(args)
         try:
             action = ACTIONS[args.action]
