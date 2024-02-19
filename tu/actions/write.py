@@ -35,19 +35,23 @@ class RemoveAction(WriteActionBase):
 @register_action('rerun', 'rerun jobs', aliases=['rr'])
 class RerunAction(WriteActionBase):
     def rerun(self, info, commit):
+        new_ids = []
         for i in tqdm(info):
             command = i['command']
             gpus = i['gpus_required']
             slots = i['slots_required']
-            self.backend.add(command, gpus, slots, commit=commit)
+            ji = self.backend.add(command, gpus, slots, commit=commit)
+            new_ids.append(ji)
+        return new_ids
 
     def main(self, args):
         info = self.backend.full_info(self.ids, self.filters)
         if not info:
             print('No job to rerun.')
             return
-        self.rerun(info, args.commit)
-        reran_ids = ', '.join(str(i['id']) for i in info)
+        new_ids = self.rerun(info, args.commit)
+        reran_ids = ', '.join(
+            f"{i['id']} -> {j}" for i, j in zip(info, new_ids))
         print('Reran:', reran_ids)
 
 
@@ -58,7 +62,8 @@ class RequeueAction(RerunAction, RemoveAction):
         if not info:
             print('No job to requeue.')
             return
-        self.rerun(info, args.commit)
+        new_ids = self.rerun(info, args.commit)
         self.remove(info, args.commit)
-        requeued_ids = ', '.join(str(i['id']) for i in info)
+        requeued_ids = ', '.join(
+            f"{i['id']} -> {j}" for i, j in zip(info, new_ids))
         print('Requeued:', requeued_ids)
