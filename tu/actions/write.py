@@ -36,7 +36,9 @@ class KillAction(WriteActionBase):
 @register_action('remove', 'remove jobs', aliases=['rm'])
 class RemoveAction(WriteActionBase):
     def remove(self, info, commit):
-        for i in tqdm(info):
+        queued = [i for i in info if i['status'] == 'queued']
+        remaining = [i for i in info if i['status'] != 'queued']
+        for i in tqdm(queued + remaining):
             self.backend.remove(i, commit=commit)
 
     def main(self, args):

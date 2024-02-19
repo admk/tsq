@@ -8,7 +8,7 @@ from .base import ActionBase
 class FilterArgs:
     force_all: bool = False
     running: bool = False
-    allocating: bool = False
+    queued: bool = False
     success: bool = False
     failed: bool = False
     killed: bool = False
@@ -37,9 +37,9 @@ class FilterActionBase(ActionBase):
             'action': 'store_true',
             'help': 'Perform the action on running jobs.',
         },
-        ('-a', '--allocating'): {
+        ('-q', '--queued'): {
             'action': 'store_true',
-            'help': 'Perform the action on allocating jobs.',
+            'help': 'Perform the action on queued/allocating jobs.',
         },
         ('-s', '--success'): {
             'action': 'store_true',
@@ -76,7 +76,7 @@ class FilterActionBase(ActionBase):
         self.filters = FilterArgs(
             force_all=args.all,
             running=args.running,
-            allocating=args.allocating,
+            queued=args.queued,
             success=args.success,
             failed=args.failed,
             killed=args.killed,
