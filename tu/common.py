@@ -15,17 +15,19 @@ STDOUT_TTY = os.isatty(sys.stdout.fileno())
 STDERR_TTY = os.isatty(sys.stderr.fileno())
 
 
-def file_tail_lines(f, n):
-    if isinstance(f, str):
-        with open(f, 'r', encoding='utf-8') as f:
-            return file_tail_lines(f, n)
-    if n > 0:
-        f.seek(0, os.SEEK_END)
-        f.seek(max(f.tell() - n, 0), os.SEEK_SET)
-    return f.read()
-
-
-def tail_lines(text, n):
-    if n == 0:
+def tail_lines(text, tail):
+    if tail <= 0:
         return text
-    return ''.join(text.splitlines()[-n:])
+    return '\n'.join(text.split('\n')[-tail:])
+
+
+def file_tail_lines(file, tail):
+    if isinstance(file, str):
+        with open(file, 'r', encoding='utf-8') as f:
+            return tail_lines(f.read(), tail)
+    return tail_lines(file.read(), tail)
+
+
+def unique(seq):
+    seen = set()
+    return [x for x in seq if x not in seen and not seen.add(x)]

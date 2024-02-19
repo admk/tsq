@@ -77,7 +77,9 @@ class ListAction(ReadActionBase):
             'help':
                 'Columns to display, separated by commas. Available columns: '
                 'id, status, slots, gpus, gpu_ids, '
-                'enqueue, start, end, time, command.'
+                'enqueue, start, end, time, command, output. '
+                'Alternatively, prefix a column with "+" to show it, '
+                'and with "-" to hide it.'
         },
         ('-t', '--table-format'): {
             'type': str,
@@ -92,7 +94,13 @@ class ListAction(ReadActionBase):
 
     @staticmethod
     def shorten(text, max_len):
-        return textwrap.shorten(text, width=max_len, placeholder='...')
+        if not max_len:
+            return text
+        return text if len(text) <= max_len else text[:max_len - 3] + '...'
+
+    @staticmethod
+    def _format_time(time):
+        return time.strftime('%m-%d %H:%M') if time else None
 
     def format(self, args, tqdm_disable=False):
         info = self.backend.full_info(
@@ -100,17 +108,19 @@ class ListAction(ReadActionBase):
         if not info:
             return 'No jobs found.'
         rows = []
+        default_columns = ['id', 'status', 'start', 'time', 'command']
         columns = [c.lower() for c in args.columns.split(',')]
+        plus_columns = [c for c in columns if c.startswith('+')]
+        minus_columns = [c for c in columns if c.startswith('-')]
+        columns = [c for c in columns if c not in plus_columns + minus_columns]
+        if columns and (plus_columns or minus_columns):
+            print('Cannot mix +/- columns with explicit columns.')
+            return 1
+        else:
+            columns = default_columns + [c[1:] for c in plus_columns]
+            columns = [c for c in columns if f'-{c}' not in minus_columns]
+        columns = list(dict.fromkeys(columns))
         for i in info:
-            enqueue_time = i['enqueue_time'].strftime('%m-%d %H:%M')
-            try:
-                start_time = i['start_time'].strftime('%m-%d %H:%M')
-            except KeyError:
-                start_time = ''
-            try:
-                end_time = i['end_time'].strftime('%m-%d %H:%M')
-            except KeyError:
-                end_time = ''
             try:
                 time_run = timedelta_format(i['time_run'], 'wdhms', 2)
             except KeyError:
@@ -121,12 +131,15 @@ class ListAction(ReadActionBase):
                 'Slots': i.get('slots_required', 1),
                 'GPUs': i.get('gpus_required', 0),
                 'GPU IDs': i.get('gpu_ids', ''),
-                'Enqueue': enqueue_time,
-                'Start': start_time,
-                'End': end_time,
+                'Enqueue': self._format_time(i.get('enqueue_time')),
+                'Start': self._format_time(i.get('start_time')),
+                'End': self._format_time(i.get('end_time')),
                 'Time': time_run,
                 'Command': self.shorten(i['command'], args.length),
             }
+            if 'output' in columns:
+                row['Output'] = self.shorten(
+                    self.backend.output(i, 1), args.length)
             rows.append({
                 k: v for k, v in row.items()
                 if k.replace(' ', '_').lower() in columns})
@@ -184,7 +197,8 @@ class CommandsAction(ReadActionBase):
         return '\n'.join(outputs)
 
 
-@register_action('export', 'show job infos in machine-readable format')
+@register_action(
+    'export', 'show job infos in machine-readable format', aliases=['e'])
 class ExportAction(ReadActionBase):
     export_options = {
         ('-e', '--export-format'): {
