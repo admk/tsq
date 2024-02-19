@@ -8,13 +8,16 @@ from .base import register_backend, BackendBase
 
 @register_backend('ts')
 class TaskSpooler(BackendBase):
-    def _ts(self, *args, commit=True):
+    def _ts(self, *args, commit=True, interactive=False):
         cmd = ['ts'] + [str(a) for a in args]
         if not commit:
             print(' '.join(cmd))
             return None
-        p = subprocess.run(cmd, capture_output=True)
-        return p.stdout.decode('utf-8').strip()
+        if not interactive:
+            p = subprocess.run(cmd, capture_output=True)
+            return p.stdout.decode('utf-8').strip()
+        subprocess.run(cmd, shell=True)
+        return None
 
     def job_info(self, ids, filters):
         info = []
