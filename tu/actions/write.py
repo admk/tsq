@@ -1,7 +1,6 @@
 import sys
 
 from ..common import tqdm
-from ..wrapper import job_info, full_info, add, remove
 from .base import register_action, DryActionBase
 from .filter import FilterActionBase
 
@@ -19,49 +18,47 @@ class WriteActionBase(FilterActionBase, DryActionBase):
 
 @register_action('remove', 'remove jobs', aliases=['rm'])
 class RemoveAction(WriteActionBase):
-    def remove(self, ids, commit):
-        for i in tqdm(ids):
-            remove(i, commit=commit)
-        return ids
+    def remove(self, info, commit):
+        for i in tqdm(info):
+            self.backend.remove(i, commit=commit)
 
     def main(self, args):
-        info = job_info(self.ids, self.filters)
-        ids = [i['id'] for i in info]
-        if not ids:
+        info = self.backend.job_info(self.ids, self.filters)
+        if not info:
             print('No job to remove.')
             return
-        removed_ids = self.remove(ids, args.commit)
-        print('Removed:', ', '.join(str(i) for i in removed_ids))
+        self.remove(info, args.commit)
+        removed_ids = ', '.join(str(i['id']) for i in info)
+        print('Removed:', removed_ids)
 
 
 @register_action('rerun', 'rerun jobs', aliases=['rr'])
 class RerunAction(WriteActionBase):
     def rerun(self, info, commit):
-        reran_ids = []
         for i in tqdm(info):
-            reran_ids += [i['id']]
             command = i['command']
             gpus = i['gpus_required']
             slots = i['slots_required']
-            add(command, gpus, slots, commit=commit)
-        return reran_ids
+            self.backend.add(command, gpus, slots, commit=commit)
 
     def main(self, args):
-        info = full_info(self.ids, self.filters)
+        info = self.backend.full_info(self.ids, self.filters)
         if not info:
             print('No job to rerun.')
             return
-        reran_ids = self.rerun(info, args.commit)
-        print('Reran:', ', '.join(str(i) for i in reran_ids))
+        self.rerun(info, args.commit)
+        reran_ids = ', '.join(str(i['id']) for i in info)
+        print('Reran:', reran_ids)
 
 
 @register_action('requeue', 'requeue jobs', aliases=['rq'])
 class RequeueAction(RerunAction, RemoveAction):
     def main(self, args):
-        info = full_info(self.ids, self.filters)
+        info = self.backend.full_info(self.ids, self.filters)
         if not info:
             print('No job to requeue.')
             return
-        reran_ids = self.rerun(info, args.commit)
-        self.remove(reran_ids, args.commit)
-        print('Requeued:', ', '.join(str(i) for i in reran_ids))
+        self.rerun(info, args.commit)
+        self.remove(info, args.commit)
+        requeued_ids = ', '.join(str(i['id']) for i in info)
+        print('Requeued:', requeued_ids)

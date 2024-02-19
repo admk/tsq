@@ -5,7 +5,6 @@ import argparse
 import itertools
 
 from ..common import tqdm, STDIN_TTY
-from ..wrapper import full_info, add
 from .base import register_action, DryActionBase
 from .filter import FilterArgs
 
@@ -125,7 +124,7 @@ class AddAction(DryActionBase):
         commands = self._extrapolate_ranges(commands)
         commands = self._extrapolate_sets(commands)
         if args.unique:
-            info = full_info(None, FilterArgs())
+            info = self.backend.full_info(None, FilterArgs())
             queued_commands = [i['command'] for i in info]
             commands = list(dict.fromkeys(commands))
             skipped = [c for c in commands if c in queued_commands]
@@ -140,7 +139,8 @@ class AddAction(DryActionBase):
             return
         ids = []
         for c in tqdm(commands):
-            output = add(c, args.gpus, args.slots, commit=args.commit)
+            output = self.backend.add(
+                c, args.gpus, args.slots, commit=args.commit)
             ids.append(output)
         if any(ids):
             print('Added:', ', '.join(ids))

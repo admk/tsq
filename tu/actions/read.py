@@ -10,7 +10,6 @@ import functools
 from blessed import Terminal
 
 from ..utils import timedelta_format
-from ..wrapper import job_info, full_info, output
 from .base import register_action
 from .filter import FilterActionBase
 
@@ -96,7 +95,8 @@ class ListAction(ReadActionBase):
         return textwrap.shorten(text, width=max_len, placeholder='...')
 
     def format(self, args, tqdm_disable=False):
-        info = full_info(self.ids, self.filters, tqdm_disable=tqdm_disable)
+        info = self.backend.full_info(
+            self.ids, self.filters, tqdm_disable=tqdm_disable)
         if not info:
             return 'No jobs found.'
         rows = []
@@ -138,14 +138,15 @@ class ListAction(ReadActionBase):
 @register_action('ids', help='show job IDs', aliases=['id'])
 class IdsAction(ReadActionBase):
     def format(self, args, tqdm_disable=False):
-        jobs = job_info(self.ids, self.filters)
+        jobs = self.backend.job_info(self.ids, self.filters)
         return ', '.join(str(i['id']) for i in jobs)
 
 
 @register_action('info', 'show job infos')
 class InfoAction(ReadActionBase):
     def format(self, args, tqdm_disable=False):
-        info = full_info(self.ids, self.filters, tqdm_disable=tqdm_disable)
+        info = self.backend.full_info(
+            self.ids, self.filters, tqdm_disable=tqdm_disable)
         if not info:
             return 'No jobs found.'
         outputs = []
@@ -172,7 +173,8 @@ class CommandsAction(ReadActionBase):
         self.options.update(self.commands_options)
 
     def format(self, args, tqdm_disable=False):
-        info = full_info(self.ids, self.filters, tqdm_disable=tqdm_disable)
+        info = self.backend.full_info(
+            self.ids, self.filters, tqdm_disable=tqdm_disable)
         outputs = []
         for i in info:
             if args.no_job_ids:
@@ -191,8 +193,11 @@ class ExportAction(ReadActionBase):
             'help': 'The format of the output.',
         },
         ('-t', '--tail'): {
-            'action': 'store_true',
-            'help': '"tail -n 10 -f" the output of the job.',
+            'type': int,
+            'default': None,
+            'help':
+                'The tail lines of the output. '
+                'If 0, all lines will be shown.',
         },
     }
 
@@ -202,12 +207,12 @@ class ExportAction(ReadActionBase):
 
     def extra_func(self, i, args):
         i['time_run'] = i['time_run'].total_seconds()
-        if args.tail:
-            i['output'] = output(i['id'], tail=True)
+        if args.tail is not None:
+            i['output'] = self.backend.output(i, args.tail)
 
     def format(self, args, tqdm_disable=False):
         extra_func = functools.partial(self.extra_func, args=args)
-        info = full_info(
+        info = self.backend.full_info(
             self.ids, self.filters,
             extra_func=extra_func, tqdm_disable=tqdm_disable)
         if args.export_format == 'json':
@@ -226,10 +231,12 @@ class ExportAction(ReadActionBase):
 @register_action('outputs', 'Show job outputs', aliases=['out'])
 class OutputsAction(ReadActionBase):
     outputs_options = {
-        ('-l', '--lines'): {
+        ('-t', '--tail'): {
             'type': int,
-            'default': 10,
-            'help': 'Number of lines.',
+            'default': 0,
+            'help':
+                'Number of lines. '
+                'If 0, all lines will be shown.',
         },
         ('-R', '--raw'): {
             'action': 'store_true',
@@ -242,13 +249,14 @@ class OutputsAction(ReadActionBase):
         self.options.update(self.outputs_options)
 
     def format(self, args, tqdm_disable=False):
-        info = job_info(self.ids, self.filters)
+        info = self.backend.job_info(self.ids, self.filters)
+        if not info:
+            return 'No jobs found.'
         outputs = []
         for i in info:
             outputs.append(f'Job {i["id"]}:')
-            out = output(i['id'])
+            out = self.backend.output(i, args.tail)
             if not args.raw:
-                out = '\n'.join(textwrap.wrap(out, width=80))
                 out = textwrap.indent(out, '> ') + '\n'
             outputs.append(out)
-        return '\n'.join(outputs)
+        return '\n'.join(outputs).rstrip()

@@ -1,13 +1,23 @@
-
+import copy
 from abc import abstractmethod
+
+from ..backends import BACKENDS
 
 
 class ActionBase:
     name = NotImplemented
+    base_options = {
+        ('-b', '--backend'): {
+            'type': str,
+            'default': 'ts',
+            'choices': ['ts'],
+            'help': 'The backend to use.',
+        },
+    }
 
     def __init__(self, name, parser_kwargs):
         super().__init__()
-        self.options = {}
+        self.options = copy.deepcopy(self.base_options)
         self.name = name
         self.parser_kwargs = parser_kwargs
 
@@ -24,6 +34,11 @@ class ActionBase:
 
     def __call__(self, args):
         args = self.transform_args(args)
+        try:
+            self.backend = BACKENDS[args.backend]()
+        except KeyError:
+            print(f'Invalid backend: {args.backend}')
+            return 1
         return self.main(args)
 
 

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from .. import wrapper
+from ..common import STATUSES
 from .base import ActionBase
 
 
@@ -15,7 +15,7 @@ class FilterArgs:
 
     @property
     def all(self):
-        flags = all(not getattr(self, a) for a in wrapper.STATUSES)
+        flags = all(not getattr(self, a) for a in STATUSES)
         return self.force_all or flags
 
 
@@ -90,5 +90,5 @@ class FilterActionBase(ActionBase):
     @property
     def has_filters(self):
         filters = [self.ids, self.filters.force_all]
-        filters += [getattr(self.filters, a) for a in wrapper.STATUSES]
+        filters += [getattr(self.filters, a) for a in STATUSES]
         return any(filters)
