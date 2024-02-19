@@ -28,6 +28,10 @@ def file_tail_lines(file, tail):
     return tail_lines(file.read(), tail)
 
 
-def unique(seq):
-    seen = set()
-    return [x for x in seq if x not in seen and not seen.add(x)]
+def dict_merge(d, u):
+    for k, v in u.items():
+        if isinstance(v, dict):
+            d[k] = dict_merge(d.get(k, {}), v)
+        else:
+            d[k] = v
+    return d

@@ -1,3 +1,5 @@
+import os
+import re
 import shlex
 import datetime
 import subprocess
@@ -8,16 +10,48 @@ from .base import register_backend, BackendBase
 
 @register_backend('ts')
 class TaskSpooler(BackendBase):
+    def __init__(self, config):
+        super().__init__(config)
+        self._init_env()
+
+    def _init_env(self):
+        group = self.config.get('group', 'default')
+        slots = self.config.get('slots')
+        if slots == 'auto':
+            try:
+                nv = subprocess.check_output(['nvidia-smi', '-L'])
+                slots = len(nv.splitlines())
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                slots = 1
+        self.env.update({
+            'TS_SLOTS': str(slots),
+            'TS_SOCKET': f'/tmp/ts-{group}.sock',
+        })
+
     def _ts(self, *args, commit=True, interactive=False):
         cmd = ['ts'] + [str(a) for a in args]
         if not commit:
             print(' '.join(cmd))
             return None
+        env = dict(os.environ, **self.env)
         if not interactive:
-            p = subprocess.run(cmd, capture_output=True)
+            p = subprocess.run(cmd, capture_output=True, env=env)
             return p.stdout.decode('utf-8').strip()
-        subprocess.run(cmd, shell=True)
+        subprocess.run(cmd, shell=True, env=env)
         return None
+
+    def backend_info(self):
+        version = self._ts('-V')
+        version = re.search(r'(v[\.\d]+)', version).group(1)
+        return {
+            'name': 'Task Spooler',
+            'command': 'ts',
+            'slots': int(self._ts('-S') or 1),
+            'version': version,
+        }
+
+    def backend_kill(self, args):
+        self._ts('-K')
 
     def job_info(self, ids, filters):
         info = []
@@ -35,6 +69,8 @@ class TaskSpooler(BackendBase):
             else:
                 job_id, status, *_ = l
                 exitcode = None
+            if status == 'allocating':
+                status = 'queued'
             info.append({
                 'id': int(job_id),
                 'status': status,
@@ -87,6 +123,7 @@ class TaskSpooler(BackendBase):
                 'end_time': end_time,
                 'time_run': delta,
                 'output_file': self._ts('-o', i['id']),
+                'pid': int(self._ts('-p', i['id']) or 0),
             }
             i.update({k: v for k, v in new_info.items() if v is not None})
             if extra_func:

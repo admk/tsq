@@ -1,15 +1,24 @@
 import copy
 from abc import abstractmethod
 
+import tomlkit
+
 from ..backends import BACKENDS
 
 
 class ActionBase:
-    name = NotImplemented
     base_options = {
+        ('-rc', '--rc-file'): {
+            'type': str,
+            'default': None,
+            'help':
+                'The configuration file to use.'
+                'If not provided, it reads from "~/.config/tu.toml" '
+                'and "./.tu.toml".'
+        },
         ('-b', '--backend'): {
             'type': str,
-            'default': 'ts',
+            'default': None,
             'choices': ['ts'],
             'help': 'The backend to use.',
         },
@@ -21,10 +30,6 @@ class ActionBase:
         self.name = name
         self.parser_kwargs = parser_kwargs
 
-    def add_arguments(self, parser):
-        for option, kwargs in self.options.items():
-            parser.add_argument(*option, **kwargs)
-
     def transform_args(self, args):
         return args
 
@@ -32,13 +37,29 @@ class ActionBase:
     def main(self, args):
         raise NotImplementedError
 
+    def _load_config(self, args):
+        if args.rc_file:
+            with open(args.rc_file, 'r', encoding='utf-8') as f:
+                return tomlkit.load(f)
+        config = {}
+        for path in ('~/.config/tu.toml', './.tu.toml'):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    config.update(tomlkit.load(f))
+            except FileNotFoundError:
+                pass
+        return config
+
     def __call__(self, args):
         args = self.transform_args(args)
+        config = self._load_config(args)
+        backend_name = args.backend or config.get('backend', 'ts')
         try:
-            self.backend = BACKENDS[args.backend]()
+            backend_cls = BACKENDS[backend_name]
         except KeyError:
             print(f'Invalid backend: {args.backend}')
             return 1
+        self.backend = backend_cls(config)
         return self.main(args)
 
 

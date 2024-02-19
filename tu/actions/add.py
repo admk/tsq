@@ -43,10 +43,9 @@ class AddAction(DryActionBase):
         },
     }
 
-    def add_arguments(self, parser):
-        super().add_arguments(parser)
-        for option, kwargs in self.add_options.items():
-            parser.add_argument(*option, **kwargs)
+    def __init__(self, name, parser_kwargs):
+        super().__init__(name, parser_kwargs)
+        self.options.update(self.add_options)
 
     @staticmethod
     def _regex_extrapolate(texts, regex, extrapolator):
