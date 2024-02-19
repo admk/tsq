@@ -16,6 +16,23 @@ class WriteActionBase(FilterActionBase, DryActionBase):
         return args
 
 
+@register_action('kill', 'kill jobs', aliases=['k'])
+class KillAction(WriteActionBase):
+    def kill(self, info, commit):
+        for i in tqdm(info):
+            self.backend.kill(i, commit=commit)
+
+    def main(self, args):
+        info = self.backend.job_info(self.ids, self.filters)
+        info = [i for i in info if i['status'] == 'running']
+        if not info:
+            print('No job to kill.')
+            return
+        self.kill(info, args.commit)
+        killed_ids = ', '.join(str(i['id']) for i in info)
+        print('Killed:', killed_ids)
+
+
 @register_action('remove', 'remove jobs', aliases=['rm'])
 class RemoveAction(WriteActionBase):
     def remove(self, info, commit):
