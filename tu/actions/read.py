@@ -15,6 +15,9 @@ from .base import register_action
 from .filter import FilterActionBase
 
 
+term = Terminal()
+
+
 class ReadActionBase(FilterActionBase):
     read_options = {
         ('-n', '--interval'): {
@@ -29,11 +32,10 @@ class ReadActionBase(FilterActionBase):
         self.options.update(self.read_options)
 
     @abstractmethod
-    def format(self, args):
+    def format(self, args, tqdm_disable=False):
         raise NotImplementedError
 
     def loop(self, args):
-        term = Terminal()
         with term.hidden_cursor(), term.fullscreen():
             while True:
                 try:
@@ -41,7 +43,7 @@ class ReadActionBase(FilterActionBase):
                     print(term.move(0, 0), end='')
                     dt = datetime.fromtimestamp(query_start)
                     print(f'{platform.node()}\t\t\t{dt:%Y-%m-%d %H:%M:%S}')
-                    output = self.format(args)
+                    output = self.format(args, tqdm_disable=True)
                     if output:
                         print(output, end=term.clear_eol)
                     print(term.clear_eos, end='')
@@ -56,7 +58,7 @@ class ReadActionBase(FilterActionBase):
     def main(self, args):
         if args.interval is not None:
             return self.loop(args)
-        print(self.format(args))
+        print(self.format(args, tqdm_disable=False))
         return 0
 
 
@@ -93,8 +95,8 @@ class ListAction(ReadActionBase):
     def shorten(text, max_len):
         return textwrap.shorten(text, width=max_len, placeholder='...')
 
-    def format(self, args):
-        info = full_info(self.ids, self.filters)
+    def format(self, args, tqdm_disable=False):
+        info = full_info(self.ids, self.filters, tqdm_disable=tqdm_disable)
         if not info:
             return 'No jobs found.'
         rows = []
@@ -135,15 +137,15 @@ class ListAction(ReadActionBase):
 
 @register_action('ids', help='show job IDs', aliases=['id'])
 class IdsAction(ReadActionBase):
-    def format(self, args):
+    def format(self, args, tqdm_disable=False):
         jobs = job_info(self.ids, self.filters)
         return ', '.join(str(i['id']) for i in jobs)
 
 
 @register_action('info', 'show job infos')
 class InfoAction(ReadActionBase):
-    def format(self, args):
-        info = full_info(self.ids, self.filters)
+    def format(self, args, tqdm_disable=False):
+        info = full_info(self.ids, self.filters, tqdm_disable=tqdm_disable)
         if not info:
             return 'No jobs found.'
         outputs = []
@@ -169,8 +171,8 @@ class CommandsAction(ReadActionBase):
         super().__init__(name, parser_kwargs)
         self.options.update(self.commands_options)
 
-    def format(self, args):
-        info = full_info(self.ids, self.filters)
+    def format(self, args, tqdm_disable=False):
+        info = full_info(self.ids, self.filters, tqdm_disable=tqdm_disable)
         outputs = []
         for i in info:
             if args.no_job_ids:
@@ -203,9 +205,11 @@ class ExportAction(ReadActionBase):
         if args.tail:
             i['output'] = output(i['id'], tail=True)
 
-    def format(self, args):
+    def format(self, args, tqdm_disable=False):
         extra_func = functools.partial(self.extra_func, args=args)
-        info = full_info(self.ids, self.filters, extra_func=extra_func)
+        info = full_info(
+            self.ids, self.filters,
+            extra_func=extra_func, tqdm_disable=tqdm_disable)
         if args.export_format == 'json':
             import json
             return json.dumps(info, indent=4, default=str)
@@ -237,7 +241,7 @@ class OutputsAction(ReadActionBase):
         super().__init__(name, parser_kwargs)
         self.options.update(self.outputs_options)
 
-    def format(self, args):
+    def format(self, args, tqdm_disable=False):
         info = job_info(self.ids, self.filters)
         outputs = []
         for i in info:

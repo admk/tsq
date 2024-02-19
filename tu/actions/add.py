@@ -1,11 +1,10 @@
 import re
-import os
 import sys
 import textwrap
 import argparse
 import itertools
 
-from ..common import tqdm
+from ..common import tqdm, STDIN_TTY
 from ..wrapper import full_info, add
 from .base import register_action, DryActionBase
 from .filter import FilterArgs
@@ -89,7 +88,7 @@ class AddAction(DryActionBase):
 
     @staticmethod
     def _extrapolate_inputs(command, from_file):
-        if not os.isatty(sys.stdin.fileno()):
+        if not STDIN_TTY:
             inputs = sys.stdin.readlines()
         else:
             inputs = []
@@ -134,6 +133,11 @@ class AddAction(DryActionBase):
             if skipped:
                 print('Skipped:')
                 print(textwrap.indent('\n'.join(skipped), '  '))
+        if not commands:
+            print('No command to add.')
+            if STDIN_TTY:
+                print('Use "-f -" to read commands from stdin.')
+            return
         ids = []
         for c in tqdm(commands):
             output = add(c, args.gpus, args.slots, commit=args.commit)

@@ -45,7 +45,7 @@ def job_info(ids, filters):
     return info
 
 
-def full_info(ids, filters, extra_func=None):
+def full_info(ids, filters, extra_func=None, tqdm_disable=False):
     def get_line(ji, key):
         for l in ji.splitlines():
             if key in l:
@@ -59,7 +59,7 @@ def full_info(ids, filters, extra_func=None):
         return datetime.datetime.strptime(time, '%a %b %d %H:%M:%S %Y')
 
     info = job_info(ids, filters)
-    for i in tqdm(info):
+    for i in tqdm(info, disable=tqdm_disable):
         ji = _ts('-i', i['id'])
         start_time = get_time(ji, 'Start time: ')
         end_time = get_time(ji, 'End time: ')
