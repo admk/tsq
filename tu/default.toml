@@ -12,5 +12,3 @@ slots = 1
 
 [backends.ts]
 command = "ts"
-
-[backends.ts]

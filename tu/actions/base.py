@@ -48,7 +48,11 @@ class ActionBase:
     def _load_config(self, args):
         if args.rc_file:
             with open(args.rc_file, 'r', encoding='utf-8') as f:
-                return tomlkit.load(f)
+                try:
+                    return tomlkit.load(f)
+                except tomlkit.exceptions.ParseError as e:
+                    print(f'Error parsing {args.rc_file}: {e}')
+                    return {}
         else:
             args.rc_file = self.rc_path
         rc_files = [
@@ -60,7 +64,12 @@ class ActionBase:
         for path in rc_files:
             try:
                 with open(path, 'r', encoding='utf-8') as f:
-                    config = dict_merge(config, tomlkit.load(f))
+                    try:
+                        rc = tomlkit.load(f)
+                    except tomlkit.exceptions.ParseError as e:
+                        print(f'Error parsing {path}: {e}')
+                        continue
+                config = dict_merge(config, rc)
             except FileNotFoundError:
                 pass
         return config
