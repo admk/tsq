@@ -1,3 +1,5 @@
+import sys
+
 from dataclasses import dataclass
 
 from ..common import STATUSES
@@ -21,13 +23,15 @@ class FilterArgs:
 
 class FilterActionBase(ActionBase):
     filter_options = {
-        ('-i', '--id'): {
+        ('id', ): {
             'type': str,
             'default': None,
+            'nargs': '?',
             'help':
-                'The ranges of job IDs to perform the action on, '
+                'Optional ranges of job IDs to perform the action on, '
                 'a comma-separated list of ranges, e.g. "1-3,5,7-9". '
-                'If not provided, all jobs will be affected.',
+                'If not provided, all jobs will be affected. '
+                'If only "-" is specified, it reads from stdin.'
         },
         ('-A', '--all'): {
             'action': 'store_true',
@@ -60,6 +64,9 @@ class FilterActionBase(ActionBase):
         self.options.update(self.filter_options)
 
     def _parse_ids(self, args):
+        if args.id == '-':
+            args.id = sys.stdin.read().strip()
+            return
         if not args.id:
             self.ids = None
             return
