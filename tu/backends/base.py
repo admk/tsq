@@ -1,18 +1,10 @@
-import os
 from abc import abstractmethod
-
-from ..common import dict_merge
 
 
 class BackendBase:
-    default_config = {
-        'group': 'default',
-        'slots': 'auto',
-    }
-
     def __init__(self, config):
         super().__init__()
-        self.config = dict_merge(self.default_config, config)
+        self.config = config
         self.env = {}
 
     @abstractmethod
@@ -20,7 +12,11 @@ class BackendBase:
         raise NotImplementedError
 
     @abstractmethod
-    def backend_kill(self, args):
+    def backend_reset(self, args):
+        raise NotImplementedError
+
+    @abstractmethod
+    def backend_command(self, command, commit=True):
         raise NotImplementedError
 
     @abstractmethod
@@ -28,7 +24,7 @@ class BackendBase:
         raise NotImplementedError
 
     @abstractmethod
-    def full_info(self, ids, filters):
+    def full_info(self, ids, filters, extra_func=None, tqdm_disable=False):
         raise NotImplementedError
 
     @abstractmethod

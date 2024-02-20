@@ -9,7 +9,7 @@ from .base import register_backend, BackendBase
 
 
 @register_backend('ts')
-class TaskSpooler(BackendBase):
+class TaskSpoolerBackend(BackendBase):
     def __init__(self, config):
         super().__init__(config)
         self._init_env()
@@ -35,9 +35,9 @@ class TaskSpooler(BackendBase):
             return None
         env = dict(os.environ, **self.env)
         if not interactive:
-            p = subprocess.run(cmd, capture_output=True, env=env)
+            p = subprocess.run(cmd, capture_output=True, env=env, check=True)
             return p.stdout.decode('utf-8').strip()
-        subprocess.run(cmd, shell=True, env=env)
+        subprocess.run(cmd, shell=True, env=env, check=True)
         return None
 
     def backend_info(self):
@@ -46,12 +46,14 @@ class TaskSpooler(BackendBase):
         return {
             'name': 'Task Spooler',
             'command': 'ts',
-            'slots': int(self._ts('-S') or 1),
             'version': version,
         }
 
-    def backend_kill(self, args):
+    def backend_reset(self, args):
         self._ts('-K')
+
+    def backend_command(self, command, commit=True):
+        return self._ts(*command, commit=True)
 
     def job_info(self, ids, filters):
         info = []
@@ -136,12 +138,13 @@ class TaskSpooler(BackendBase):
         f = info.get('output_file') or self._ts('-o', info['id'])
         return file_tail_lines(f, tail) if f else ''
 
-    def add(self, command, gpus, slots, commit=True):
+    def add(self, command, gpus=None, slots=None, commit=True):
         torun = []
-        if gpus:
-            torun += ['-G', gpus]
-        if slots:
-            torun += ['-N', slots]
+        alloc_config = self.config.get('alloc', {})
+        gpus = gpus if gpus is not None else alloc_config.get('gpus', 1)
+        slots = slots if slots is not None else alloc_config.get('slots', 1)
+        torun += ['-G', gpus]
+        torun += ['-N', slots]
         command = command.replace('\n', '\\n')
         torun += shlex.split(command)
         return self._ts(*torun, commit=commit)

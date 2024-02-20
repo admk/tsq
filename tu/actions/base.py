@@ -1,9 +1,11 @@
+import os
 import copy
 from abc import abstractmethod
 
 import tomlkit
 
 from ..backends import BACKENDS
+from ..common import dict_merge
 
 
 class ActionBase:
@@ -12,7 +14,7 @@ class ActionBase:
             'type': str,
             'default': None,
             'help':
-                'The configuration file to use.'
+                'The configuration file to use. '
                 'If not provided, it reads from "~/.config/tu.toml" '
                 'and "./.tu.toml".'
         },
@@ -23,6 +25,7 @@ class ActionBase:
             'help': 'The backend to use.',
         },
     }
+    rc_path = '.tu.toml'
 
     def __init__(self, name, parser_kwargs):
         super().__init__()
@@ -41,11 +44,18 @@ class ActionBase:
         if args.rc_file:
             with open(args.rc_file, 'r', encoding='utf-8') as f:
                 return tomlkit.load(f)
+        else:
+            args.rc_file = self.rc_path
+        rc_files = [
+            os.path.join(os.path.dirname(__file__), '..', 'default_config.toml'),
+            '~/.config/tu.toml',
+            self.rc_path,
+        ]
         config = {}
-        for path in ('~/.config/tu.toml', './.tu.toml'):
+        for path in rc_files:
             try:
                 with open(path, 'r', encoding='utf-8') as f:
-                    config.update(tomlkit.load(f))
+                    config = dict_merge(config, tomlkit.load(f))
             except FileNotFoundError:
                 pass
         return config
@@ -57,9 +67,9 @@ class ActionBase:
         try:
             backend_cls = BACKENDS[backend_name]
         except KeyError:
-            print(f'Invalid backend: {args.backend}')
-            return 1
-        self.backend = backend_cls(config)
+            print(f'Invalid backend: {backend_name}')
+            backend_cls = BACKENDS['dummy']
+        self.backend = backend_cls(config) if backend_cls else None
         return self.main(args)
 
 
