@@ -41,9 +41,8 @@ def dict_simplify(d):
     if not isinstance(d, dict):
         return d
     for k, v in list(d.items()):
-        if isinstance(v, dict):
-            v = dict_simplify(v)
-        if not v:
+        v = dict_simplify(v)
+        if v == {}:
             del d[k]
         else:
             d[k] = v
