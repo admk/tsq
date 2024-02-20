@@ -27,8 +27,12 @@ class ConfigAction(ActionBase):
         for k in key_parts:
             mapping = mapping.setdefault(k, {})
         if value is None:
+            bvalue = self.backend.backend_getset(key)
+            if bvalue is not None:
+                return bvalue
             return mapping.get(last_key)
         mapping[last_key] = value
+        self.backend.backend_getset(key, value)
 
     def main(self, args):
         config = self.backend.config

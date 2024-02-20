@@ -35,10 +35,19 @@ class TaskSpoolerBackend(BackendBase):
             return None
         env = dict(os.environ, **self.env)
         if not interactive:
-            p = subprocess.run(cmd, capture_output=True, env=env, check=check)
-            return p.stdout.decode('utf-8').strip()
+            p = subprocess.run(
+                cmd, capture_output=True, env=env, check=check)
+            out = p.stdout.decode('utf-8').strip()
+            out += p.stderr.decode('utf-8').strip()
+            return out
         subprocess.run(cmd, shell=True, env=env, check=check)
         return None
+
+    def backend_getset(self, key, value=None):
+        if key == 'slots':
+            if value is None:
+                return int(self._ts('-S'))
+            return self._ts('-S', value)
 
     def backend_info(self):
         version = self._ts('-V')
@@ -113,6 +122,10 @@ class TaskSpoolerBackend(BackendBase):
                 delta = datetime.datetime.now() - start_time
             else:
                 delta = end_time - start_time
+            if i['status'] != 'queued':
+                pid = int(self._ts('-p', i['id'], check=False))
+            else:
+                pid = None
             new_info = {
                 'command': self.get_line(ji, 'Command: '),
                 'slots_required':
@@ -125,7 +138,7 @@ class TaskSpoolerBackend(BackendBase):
                 'end_time': end_time,
                 'time_run': delta,
                 'output_file': self._ts('-o', i['id'], check=False),
-                'pid': int(self._ts('-p', i['id'], check=False) or 0),
+                'pid': pid,
             }
             i.update({k: v for k, v in new_info.items() if v is not None})
             if extra_func:
@@ -134,7 +147,7 @@ class TaskSpoolerBackend(BackendBase):
 
     def output(self, info, tail):
         if info['status'] in ['success', 'failed', 'killed']:
-            return tail_lines(self._ts('-c', info['id']), tail)
+            return tail_lines(self._ts('-c', info['id'], check=False), tail)
         f = info.get('output_file') or self._ts('-o', info['id'], check=False)
         return file_tail_lines(f, tail) if f else ''
 
@@ -143,7 +156,8 @@ class TaskSpoolerBackend(BackendBase):
         alloc_config = self.config.get('alloc', {})
         gpus = gpus if gpus is not None else alloc_config.get('gpus', 1)
         slots = slots if slots is not None else alloc_config.get('slots', 1)
-        torun += ['-G', gpus]
+        if gpus > 0:
+            torun += ['-G', gpus]
         torun += ['-N', slots]
         command = command.replace('\n', '\\n')
         torun += shlex.split(command)
@@ -155,5 +169,5 @@ class TaskSpoolerBackend(BackendBase):
     def remove(self, info, commit=True):
         if info['status'] == 'running':
             self.kill(info, commit=commit)
-            self._ts('-w', info['id'])
+            self._ts('-w', info['id'], check=False)
         return self._ts('-r', info['id'], commit=commit)

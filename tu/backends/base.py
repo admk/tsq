@@ -7,6 +7,9 @@ class BackendBase:
         self.config = config
         self.env = {}
 
+    def backend_getset(self, key, value=None):
+        pass
+
     @abstractmethod
     def backend_info(self):
         raise NotImplementedError

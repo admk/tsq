@@ -14,12 +14,12 @@ class AddAction(DryActionBase):
     add_options = {
         ('-G', '--gpus'): {
             'type': int,
-            'default': 0,
+            'default': None,
             'help': 'Number of GPUs required.',
         },
         ('-N', '--slots'): {
             'type': int,
-            'default': 1,
+            'default': None,
             'help': 'Number of slots required.',
         },
         ('-u', '--unique'): {
