@@ -2,7 +2,9 @@ import argparse
 
 import tomlkit
 
+from ..common import tqdm
 from .base import register_action, ActionBase
+from .filter import FilterArgs
 
 
 @register_action('backend', 'backend actions', aliases=['b'])
@@ -27,14 +29,12 @@ class BackendAction(ActionBase):
 
     def info(self, args):
         binfo = self.backend.backend_info()
-        binfo['env'] = self.backend.env
-        binfo = {
-            'backend': binfo,
-            'config': self.backend.config,
-        }
         print(tomlkit.dumps(binfo).rstrip())
 
     def reset(self, args):
+        info = self.backend.full_info(None, FilterArgs())
+        for i in tqdm(info):
+            self.backend.remove(i)
         self.backend.backend_kill(args)
         print(f'Killed {self.backend.name} backend.')
 

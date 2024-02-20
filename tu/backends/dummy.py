@@ -10,7 +10,7 @@ class DummyBackend(BackendBase):
             'version': '0.0.0',
         }
 
-    def backend_reset(self, args):
+    def backend_kill(self, args):
         pass
 
     def backend_command(self, command, commit=True):

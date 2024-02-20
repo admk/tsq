@@ -5,7 +5,7 @@ class BackendBase:
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.env = {}
+        self.env = self.config.get('env', {})
 
     def backend_getset(self, key, value=None):
         pass
@@ -15,7 +15,7 @@ class BackendBase:
         raise NotImplementedError
 
     @abstractmethod
-    def backend_reset(self, args):
+    def backend_kill(self, args):
         raise NotImplementedError
 
     @abstractmethod
