@@ -1,3 +1,5 @@
+import argparse
+
 import tomlkit
 
 from .base import register_action, ActionBase
@@ -9,8 +11,13 @@ class BackendAction(ActionBase):
         ('backend_action', ): {
             'type': str,
             'default': None,
-            'choices': ['info', 'kill'],
+            'choices': ['info', 'reset', 'command'],
             'help': 'The action to perform.',
+        },
+        ('command', ): {
+            'type': str,
+            'nargs': argparse.REMAINDER,
+            'help': 'The command to run.',
         },
     }
 
@@ -27,13 +34,20 @@ class BackendAction(ActionBase):
         }
         print(tomlkit.dumps(binfo).rstrip())
 
-    def kill(self, args):
+    def reset(self, args):
         self.backend.backend_kill(args)
         print(f'Killed {self.backend.name} backend.')
 
+    def command(self, args):
+        if not args.command:
+            print('No command provided.')
+            return 1
+        print(self.backend.backend_command(args.command))
+
     def main(self, args):
         try:
-            return getattr(self, args.backend_action)(args)
+            func = getattr(self, args.backend_action)
         except AttributeError:
             print(f'Invalid backend action: {args.backend_action}')
             return 1
+        return func(args)
