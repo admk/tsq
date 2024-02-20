@@ -15,6 +15,13 @@ from .filter import FilterActionBase
 
 
 term = Terminal()
+COLOR_STATUS = {
+    'running': term.green,
+    'queued': term.yellow,
+    'failed': term.red,
+    'killed': term.orange,
+    'success': term.blue,
+}
 
 
 class ReadActionBase(FilterActionBase):
@@ -39,7 +46,7 @@ class ReadActionBase(FilterActionBase):
             while True:
                 try:
                     query_start = time.time()
-                    print(term.move(0, 0), end='')
+                    print(term.clear, term.move(0, 0), end='')
                     dt = datetime.fromtimestamp(query_start)
                     print(f'{platform.node()}\t\t\t{dt:%Y-%m-%d %H:%M:%S}')
                     output = self.format(args, tqdm_disable=True)
@@ -99,6 +106,10 @@ class ListAction(ReadActionBase):
         return text if len(text) <= max_len else text[:max_len - 3] + '...'
 
     @staticmethod
+    def _color_status(status):
+        return COLOR_STATUS.get(status, term.normal)(status).replace('\x1b(B', '')
+
+    @staticmethod
     def _format_time(time):
         return time.strftime('%m-%d %H:%M') if time else None
 
@@ -127,7 +138,7 @@ class ListAction(ReadActionBase):
                 time_run = ''
             row = {
                 'ID': i['id'],
-                'Status': i['status'],
+                'Status': self._color_status(i['status']),
                 'Slots': i.get('slots_required', 1),
                 'GPUs': i.get('gpus_required', 0),
                 'GPU IDs': i.get('gpu_ids', ''),
@@ -143,8 +154,12 @@ class ListAction(ReadActionBase):
             rows.append({
                 k: v for k, v in row.items()
                 if k.replace(' ', '_').lower() in columns})
+        maxcolwidths = [
+            None if c not in ['output', 'command'] else args.length
+            for c in columns]
         table = tabulate.tabulate(
-            rows, headers='keys', tablefmt=args.table_format)
+            rows, headers='keys', tablefmt=args.table_format,
+            maxcolwidths=maxcolwidths)
         return table
 
 
