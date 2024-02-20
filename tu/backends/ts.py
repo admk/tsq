@@ -28,16 +28,16 @@ class TaskSpoolerBackend(BackendBase):
             'TS_SOCKET': f'/tmp/ts-{group}.sock',
         })
 
-    def _ts(self, *args, commit=True, interactive=False):
+    def _ts(self, *args, commit=True, interactive=False, check=True):
         cmd = ['ts'] + [str(a) for a in args]
         if not commit:
             print(' '.join(cmd))
             return None
         env = dict(os.environ, **self.env)
         if not interactive:
-            p = subprocess.run(cmd, capture_output=True, env=env, check=True)
+            p = subprocess.run(cmd, capture_output=True, env=env, check=check)
             return p.stdout.decode('utf-8').strip()
-        subprocess.run(cmd, shell=True, env=env, check=True)
+        subprocess.run(cmd, shell=True, env=env, check=check)
         return None
 
     def backend_info(self):
@@ -53,7 +53,7 @@ class TaskSpoolerBackend(BackendBase):
         self._ts('-K')
 
     def backend_command(self, command, commit=True):
-        return self._ts(*command, commit=True)
+        return self._ts(*command, commit=True, check=False)
 
     def job_info(self, ids, filters):
         info = []
@@ -124,8 +124,8 @@ class TaskSpoolerBackend(BackendBase):
                 'start_time': start_time,
                 'end_time': end_time,
                 'time_run': delta,
-                'output_file': self._ts('-o', i['id']),
-                'pid': int(self._ts('-p', i['id']) or 0),
+                'output_file': self._ts('-o', i['id'], check=False),
+                'pid': int(self._ts('-p', i['id'], check=False) or 0),
             }
             i.update({k: v for k, v in new_info.items() if v is not None})
             if extra_func:
@@ -135,7 +135,7 @@ class TaskSpoolerBackend(BackendBase):
     def output(self, info, tail):
         if info['status'] in ['success', 'failed', 'killed']:
             return tail_lines(self._ts('-c', info['id']), tail)
-        f = info.get('output_file') or self._ts('-o', info['id'])
+        f = info.get('output_file') or self._ts('-o', info['id'], check=False)
         return file_tail_lines(f, tail) if f else ''
 
     def add(self, command, gpus=None, slots=None, commit=True):
@@ -155,4 +155,5 @@ class TaskSpoolerBackend(BackendBase):
     def remove(self, info, commit=True):
         if info['status'] == 'running':
             self.kill(info, commit=commit)
+            self._ts('-w', info['id'])
         return self._ts('-r', info['id'], commit=commit)
