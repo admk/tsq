@@ -35,3 +35,16 @@ def dict_merge(d, u):
         else:
             d[k] = v
     return d
+
+
+def dict_simplify(d):
+    if not isinstance(d, dict):
+        return d
+    for k, v in list(d.items()):
+        if isinstance(v, dict):
+            v = dict_simplify(v)
+        if not v:
+            del d[k]
+        else:
+            d[k] = v
+    return d

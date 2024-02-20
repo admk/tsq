@@ -1,5 +1,7 @@
+import copy
 import tomlkit
 
+from ..common import dict_simplify
 from .base import register_action, ActionBase
 
 
@@ -35,7 +37,7 @@ class ConfigAction(ActionBase):
         self.backend.backend_getset(key, value)
 
     def main(self, args):
-        config = self.backend.config
+        config = dict_simplify(copy.deepcopy(self.backend.config))
         if args.key is None:
             print(tomlkit.dumps(config).rstrip())
             return

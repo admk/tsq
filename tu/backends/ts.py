@@ -13,6 +13,7 @@ class TaskSpoolerBackend(BackendBase):
     def __init__(self, config):
         super().__init__(config)
         self._init_env()
+        self._ts_command = self.config.get('command', 'ts')
 
     def _init_env(self):
         group = self.config.get('group', 'default')
@@ -23,13 +24,11 @@ class TaskSpoolerBackend(BackendBase):
                 slots = len(nv.splitlines())
             except (FileNotFoundError, subprocess.CalledProcessError):
                 slots = 1
-        self.env.update({
-            'TS_SLOTS': str(slots),
-            'TS_SOCKET': f'/tmp/ts-{group}.sock',
-        })
+        self.env.setdefault('TS_SLOTS', str(slots))
+        self.env.setdefault('TS_SOCKET', f'/tmp/ts-{group}.sock')
 
     def _ts(self, *args, commit=True, interactive=False, check=True):
-        cmd = ['ts'] + [str(a) for a in args]
+        cmd = [self._ts_command] + [str(a) for a in args]
         if not commit:
             print(' '.join(cmd))
             return None
@@ -54,11 +53,11 @@ class TaskSpoolerBackend(BackendBase):
         version = re.search(r'(v[\.\d]+)', version).group(1)
         return {
             'name': 'Task Spooler',
-            'command': 'ts',
+            'command': self._ts_command,
             'version': version,
         }
 
-    def backend_reset(self, args):
+    def backend_kill(self, args):
         self._ts('-K')
 
     def backend_command(self, command, commit=True):

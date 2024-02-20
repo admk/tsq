@@ -21,8 +21,13 @@ class ActionBase:
         ('-b', '--backend'): {
             'type': str,
             'default': None,
-            'choices': ['ts'],
+            'choices': list(BACKENDS.keys()),
             'help': 'The backend to use.',
+        },
+        ('-g', '--group'): {
+            'type': str,
+            'default': None,
+            'help': 'The group to use.',
         },
     }
     rc_path = '.tu.toml'
@@ -47,7 +52,7 @@ class ActionBase:
         else:
             args.rc_file = self.rc_path
         rc_files = [
-            os.path.join(os.path.dirname(__file__), '..', 'default_config.toml'),
+            os.path.join(os.path.dirname(__file__), '..', 'default.toml'),
             '~/.config/tu.toml',
             self.rc_path,
         ]
@@ -60,10 +65,23 @@ class ActionBase:
                 pass
         return config
 
+    def _update_config(self, config, backend, group):
+        backend_config = config.get('backends', {}).get(backend, {})
+        group_config = config.get('groups', {}).get(group, {})
+        dict_merge(config, backend_config)
+        dict_merge(config, group_config)
+        config.update({
+            'backend': backend,
+            'group': group,
+        })
+        return config
+
     def __call__(self, args):
         args = self.transform_args(args)
         config = self._load_config(args)
         backend_name = args.backend or config.get('backend', 'ts')
+        group_name = args.group or config.get('group', 'default')
+        config = self._update_config(config, backend_name, group_name)
         try:
             backend_cls = BACKENDS[backend_name]
         except KeyError:

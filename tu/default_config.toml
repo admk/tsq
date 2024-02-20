@@ -1,7 +1,0 @@
-group = "default"
-slots = "auto"
-backend = "ts"
-
-[alloc]
-gpus = 1
-slots = 1
