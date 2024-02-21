@@ -1,4 +1,5 @@
 from abc import abstractmethod
+from typing import Mapping, Type
 
 from ..backends import BACKENDS
 
@@ -25,7 +26,7 @@ class ActionBase:
         except KeyError:
             print(f'Invalid backend: {backend}')
             backend_cls = BACKENDS['dummy']
-        self.backend = backend_cls(config) if backend_cls else None
+        self.backend = backend_cls(backend, config)
         return self.main(args)
 
 
@@ -49,10 +50,12 @@ class DryActionBase(ActionBase):
         return args
 
 
+_actions: Mapping[str, Type[ActionBase]] = {}
+_aliases: Mapping[str, str] = {}
 INFO = {
     'default': None,
-    'actions': {},
-    'aliases': {},
+    'actions': _actions,
+    'aliases': _aliases,
 }
 
 

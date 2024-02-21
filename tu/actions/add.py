@@ -4,9 +4,8 @@ import textwrap
 import argparse
 import itertools
 
-from ..common import tqdm, STDIN_TTY
+from ..common import tqdm, STDIN_TTY, FilterArgs
 from .base import register_action, DryActionBase
-from .filter import FilterArgs
 
 
 @register_action('add', 'add jobs', aliases=['a'])

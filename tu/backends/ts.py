@@ -10,12 +10,8 @@ from .base import register_backend, BackendBase
 
 @register_backend('ts')
 class TaskSpoolerBackend(BackendBase):
-    def __init__(self, config):
-        super().__init__(config)
-        self._init_env()
-        self._ts_command = self.config.get('command', 'ts')
-
-    def _init_env(self):
+    def __init__(self, name, config):
+        super().__init__(name, config)
         group = self.config.get('group', 'default')
         slots = self.config.get('slots')
         if slots == 'auto':
@@ -27,36 +23,39 @@ class TaskSpoolerBackend(BackendBase):
         self.env.setdefault('TS_SLOTS', str(slots))
         self.env.setdefault('TS_SOCKET', f'/tmp/ts-{group}.sock')
         self.env = dict_simplify(self.env, not_value=True)
+        self._ts_command = self.config.get('command', 'ts')
 
-    def _ts(self, *args, commit=True, interactive=False, check=True):
+    def _ts(self, *args, commit=True, shell=False, check=True):
         cmd = [self._ts_command] + [str(a) for a in args]
         if not commit:
             print(' '.join(cmd))
             return None
         env = dict(os.environ, **self.env)
-        if not interactive:
-            p = subprocess.run(
-                cmd, capture_output=True, env=env, check=check)
-            out = p.stdout.decode('utf-8').strip()
-            out += p.stderr.decode('utf-8').strip()
-            return out
-        subprocess.run(cmd, shell=True, env=env, check=check)
-        return None
+        if shell:
+            subprocess.run(' '.join(cmd), shell=True, env=env, check=check)
+            return None
+        p = subprocess.run(
+            cmd, capture_output=True, env=env, check=check)
+        out = p.stdout.decode('utf-8').strip()
+        out += p.stderr.decode('utf-8').strip()
+        return out
 
     def backend_getset(self, key, value=None):
         if key == 'slots':
             if value is None:
-                return int(self._ts('-S'))
+                return int(self._ts('-S') or -1)
             return self._ts('-S', value)
 
     def backend_info(self):
-        version = self._ts('-V')
-        version = re.search(r'(v[\.\d]+)', version).group(1)
-        return {
+        info = {
             'name': 'Task Spooler',
             'command': self._ts_command,
-            'version': version,
         }
+        version = self._ts('-V') or ''
+        result = re.search(r'(v[\.\d]+)', version)
+        if result:
+            info['version'] = result.group(1)
+        return info
 
     def backend_kill(self, args):
         self._ts('-K')
@@ -64,9 +63,12 @@ class TaskSpoolerBackend(BackendBase):
     def backend_command(self, command, commit=True):
         return self._ts(*command, commit=True, check=False)
 
-    def job_info(self, ids, filters):
+    def job_info(self, ids=None, filters=None):
         info = []
-        for l in self._ts().splitlines()[1:]:
+        tsout = self._ts()
+        if not tsout:
+            return info
+        for l in tsout.splitlines()[1:]:
             l = l.strip().split()
             if l[1] == 'finished':
                 job_id, status, _, exitcode, *_ = l
@@ -87,12 +89,12 @@ class TaskSpoolerBackend(BackendBase):
                 'status': status,
                 'exitcode': exitcode
             })
-        if not filters.all:
+        if filters is not None and not filters.all:
             for a in STATUSES:
                 if getattr(filters, a):
                     continue
                 info = [i for i in info if i['status'] != a]
-        if ids:
+        if ids is not None:
             info = [i for i in info if i['id'] in ids]
         return info
 
@@ -110,7 +112,9 @@ class TaskSpoolerBackend(BackendBase):
             return None
         return datetime.datetime.strptime(time, '%a %b %d %H:%M:%S %Y')
 
-    def full_info(self, ids, filters, extra_func=None, tqdm_disable=False):
+    def full_info(
+        self, ids=None, filters=None, extra_func=None, tqdm_disable=False
+    ):
         info = self.job_info(ids, filters)
         for i in tqdm(info, disable=tqdm_disable):
             ji = self._ts('-i', i['id'])
@@ -123,7 +127,7 @@ class TaskSpoolerBackend(BackendBase):
             else:
                 delta = end_time - start_time
             try:
-                pid = int(self._ts('-p', i['id'], check=False))
+                pid = int(self._ts('-p', i['id'], check=False) or -1)
             except ValueError:
                 pid = None
             new_info = {
@@ -145,7 +149,10 @@ class TaskSpoolerBackend(BackendBase):
                 extra_func(i)
         return info
 
-    def output(self, info, tail):
+    def output(self, info, tail, shell=False):
+        if shell:
+            self._ts('-c', info['id'], check=False, shell=True)
+            return ''
         if info['status'] in ['success', 'failed', 'killed']:
             return tail_lines(self._ts('-c', info['id'], check=False), tail)
         f = info.get('output_file') or self._ts('-o', info['id'], check=False)

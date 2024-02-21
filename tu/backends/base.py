@@ -1,11 +1,11 @@
 from abc import abstractmethod
-
-from ..common import dict_simplify
+from typing import Mapping, Type
 
 
 class BackendBase:
-    def __init__(self, config):
+    def __init__(self, name, config):
         super().__init__()
+        self.name = name
         self.config = config
         self.env = self.config.get('env', {})
 
@@ -25,15 +25,17 @@ class BackendBase:
         raise NotImplementedError
 
     @abstractmethod
-    def job_info(self, ids, filters):
+    def job_info(self, ids=None, filters=None):
         raise NotImplementedError
 
     @abstractmethod
-    def full_info(self, ids, filters, extra_func=None, tqdm_disable=False):
+    def full_info(
+        self, ids=None, filters=None, extra_func=None, tqdm_disable=False
+    ):
         raise NotImplementedError
 
     @abstractmethod
-    def output(self, info, tail):
+    def output(self, info, tail, shell=False):
         raise NotImplementedError
 
     @abstractmethod
@@ -49,7 +51,7 @@ class BackendBase:
         raise NotImplementedError
 
 
-BACKENDS = {}
+BACKENDS: Mapping[str, Type[BackendBase]] = {}
 
 
 def register_backend(name):
