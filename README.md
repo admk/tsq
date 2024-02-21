@@ -5,7 +5,7 @@
 ## Installation
 
 ```shell
-pip install task-spooler-utils
+pip install tsq
 ```
 
 Cutting edge version from the repository:
