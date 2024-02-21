@@ -122,9 +122,9 @@ class TaskSpoolerBackend(BackendBase):
                 delta = datetime.datetime.now() - start_time
             else:
                 delta = end_time - start_time
-            if i['status'] != 'queued':
+            try:
                 pid = int(self._ts('-p', i['id'], check=False))
-            else:
+            except ValueError:
                 pid = None
             new_info = {
                 'command': self.get_line(ji, 'Command: '),
