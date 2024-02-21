@@ -7,7 +7,7 @@ class BackendBase:
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.env = dict_simplify(self.config.get('env', {}), not_value=True)
+        self.env = self.config.get('env', {})
 
     def backend_getset(self, key, value=None):
         pass

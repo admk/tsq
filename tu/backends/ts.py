@@ -4,7 +4,7 @@ import shlex
 import datetime
 import subprocess
 
-from ..common import tqdm, STATUSES, file_tail_lines, tail_lines
+from ..common import tqdm, STATUSES, file_tail_lines, tail_lines, dict_simplify
 from .base import register_backend, BackendBase
 
 
@@ -26,6 +26,7 @@ class TaskSpoolerBackend(BackendBase):
                 slots = 1
         self.env.setdefault('TS_SLOTS', str(slots))
         self.env.setdefault('TS_SOCKET', f'/tmp/ts-{group}.sock')
+        self.env = dict_simplify(self.env, not_value=True)
 
     def _ts(self, *args, commit=True, interactive=False, check=True):
         cmd = [self._ts_command] + [str(a) for a in args]

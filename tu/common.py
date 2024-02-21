@@ -44,7 +44,7 @@ def dict_simplify(d, not_value=False):
     if not isinstance(d, dict):
         return d
     for k, v in list(d.items()):
-        v = dict_simplify(v)
+        v = dict_simplify(v, not_value)
         if v == {} or (not_value and not v):
             del d[k]
         else:
