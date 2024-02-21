@@ -16,7 +16,7 @@ class ConfigAction(ActionBase):
         ('value', ): {
             'type': str,
             'nargs': '?',
-            'help': 'The value to set.',
+            'help': 'The value to set.  Use "null" to delete.',
         },
     }
 
@@ -33,7 +33,10 @@ class ConfigAction(ActionBase):
             if bvalue is not None:
                 return bvalue
             return mapping.get(last_key)
-        mapping[last_key] = value
+        if value == 'null':
+            del mapping[last_key]
+        else:
+            mapping[last_key] = value
         self.backend.backend_getset(key, value)
 
     def main(self, args):
