@@ -41,7 +41,12 @@ class TaskSpoolerBackend(BackendBase):
         return out
 
     def backend_getset(self, key, value=None):
-        if key == 'slots':
+        slot_keys = [
+            'slots',
+            f'backends.{self.name}.slots',
+            f'groups.{self.config["group"]}.slots'
+        ]
+        if key in slot_keys:
             if value is None:
                 return int(self._ts('-S') or -1)
             return self._ts('-S', value)

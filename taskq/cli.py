@@ -74,7 +74,7 @@ class CLI:
                 pass
         return config
 
-    def _update_config(self, args, config):
+    def _resolve_config(self, args, config):
         backend = args.backend or config.get('backend', 'ts')
         group = args.group or config.get('group', 'default')
         backend_config = config.get('backends', {}).get(backend, {})
@@ -96,7 +96,7 @@ class CLI:
             args = [INFO['default']] + args
         args = self.parser.parse_args(args)
         config = self._load_config(args)
-        config = self._update_config(args, config)
+        config = self._resolve_config(args, config)
         try:
             action = INFO['aliases'][args.action]
             action_func = INFO['actions'][action]

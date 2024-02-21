@@ -47,6 +47,8 @@ class ConfigAction(ActionBase):
         if args.value is None:
             print(self.getset(config, args.key))
             return
-        self.getset(config, args.key, args.value)
-        with open('.tq.toml', 'w', encoding='utf-8') as f:
-            f.write(tomlkit.dumps(config))
+        with open(args.rc_file, 'r', encoding='utf-8') as f:
+            rc_config = tomlkit.load(f)
+        self.getset(rc_config, args.key, args.value)
+        with open(args.rc_file, 'w', encoding='utf-8') as f:
+            f.write(tomlkit.dumps(rc_config))
