@@ -23,8 +23,11 @@ def tail_lines(text, tail):
 
 def file_tail_lines(file, tail):
     if isinstance(file, str):
-        with open(file, 'r', encoding='utf-8') as f:
-            return tail_lines(f.read(), tail)
+        try:
+            with open(file, 'r', encoding='utf-8') as f:
+                return tail_lines(f.read(), tail)
+        except FileNotFoundError:
+            return file
     return tail_lines(file.read(), tail)
 
 
@@ -37,12 +40,12 @@ def dict_merge(d, u):
     return d
 
 
-def dict_simplify(d):
+def dict_simplify(d, not_value=False):
     if not isinstance(d, dict):
         return d
     for k, v in list(d.items()):
         v = dict_simplify(v)
-        if v == {}:
+        if v == {} or (not_value and not v):
             del d[k]
         else:
             d[k] = v
