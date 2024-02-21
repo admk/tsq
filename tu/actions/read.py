@@ -46,12 +46,15 @@ class ReadActionBase(FilterActionBase):
             while True:
                 try:
                     query_start = time.time()
-                    print(term.clear, term.move(0, 0), end='')
+                    table = self.format(args, tqdm_disable=True).split('\n')
+                    table = f'{term.clear_eol}\n'.join(table)
+                    print(term.move(0, 0), end='')
                     dt = datetime.fromtimestamp(query_start)
-                    print(f'{platform.node()}\t\t\t{dt:%Y-%m-%d %H:%M:%S}')
-                    output = self.format(args, tqdm_disable=True)
-                    if output:
-                        print(output, end=term.clear_eol)
+                    spaces = ' ' * 12
+                    header = f'{platform.node()}{spaces}{dt:%Y-%m-%d %H:%M:%S}'
+                    print(header + term.clear_eol)
+                    if table:
+                        print(table, end=term.clear_eol)
                     print(term.clear_eos, end='')
                     sys.stdout.flush()
                     query_duration = time.time() - query_start
@@ -149,8 +152,11 @@ class ListAction(ReadActionBase):
                 'Command': self.shorten(i['command'], args.length),
             }
             if 'output' in columns:
-                row['Output'] = self.shorten(
-                    self.backend.output(i, 1), args.length)
+                if i['status'] not in ['queued']:
+                    out = self.backend.output(i, 1)
+                else:
+                    out = ''
+                row['Output'] = self.shorten(out, args.length)
             rows.append({
                 k: v for k, v in row.items()
                 if k.replace(' ', '_').lower() in columns})
