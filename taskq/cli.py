@@ -93,7 +93,7 @@ class CLI:
             if '-h' in args or '--help' in args:
                 self.parser.print_help()
                 sys.exit(0)
-            args += [INFO['default']]
+            args = [INFO['default']] + args
         args = self.parser.parse_args(args)
         config = self._load_config(args)
         config = self._update_config(args, config)
