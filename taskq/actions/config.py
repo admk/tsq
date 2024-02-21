@@ -48,5 +48,5 @@ class ConfigAction(ActionBase):
             print(self.getset(config, args.key))
             return
         self.getset(config, args.key, args.value)
-        with open('.tu.toml', 'w', encoding='utf-8') as f:
+        with open('.tq.toml', 'w', encoding='utf-8') as f:
             f.write(tomlkit.dumps(config))

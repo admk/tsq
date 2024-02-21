@@ -16,8 +16,8 @@ class CLI:
             'default': None,
             'help':
                 'The configuration file to use. '
-                'If not provided, it reads from "~/.config/tu.toml" '
-                'and "./.tu.toml".'
+                'If not provided, it reads from "~/.config/tq.toml" '
+                'and "./.tq.toml".'
         },
         ('-b', '--backend'): {
             'type': str,
@@ -31,7 +31,7 @@ class CLI:
             'help': 'The group to use.',
         },
     }
-    rc_path = '.tu.toml'
+    rc_path = '.tq.toml'
 
     def __init__(self):
         super().__init__()
@@ -57,7 +57,7 @@ class CLI:
             args.rc_file = self.rc_path
         rc_files = [
             os.path.join(os.path.dirname(__file__), '..', 'default.toml'),
-            '~/.config/tu.toml',
+            '~/.config/tq.toml',
             self.rc_path,
         ]
         config = {}

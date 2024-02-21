@@ -1,4 +1,4 @@
-# Swiss Army Knife for Task Spooler
+# A Friendly Task Scheduler Frontend
 
 ## Introduction
 

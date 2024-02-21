@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "task-spooler-utils"
-version = "0.0.9"
+name = "tsq"
+version = "0.0.10"
 authors = [
   { name="admk" },
 ]
-description = "A Task Spooler Swiss Army Knife"
+description = "A Friendly Task Scheduler Frontend"
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
@@ -24,11 +24,11 @@ classifiers = [
 ]
 
 [project.scripts]
-tu = "tu.cli:main"
+tq = "taskq.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/admk/tu"
 Issues = "https://github.com/admk/tu/issues"
 
 [tool.setuptools.packages.find]
-include = ["tu", "tu.*"]
+include = ["taskq", "taskq.*"]

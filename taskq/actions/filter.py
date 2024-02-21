@@ -1,24 +1,7 @@
 import sys
 
-from dataclasses import dataclass
-
-from ..common import STATUSES
+from ..common import STATUSES, FilterArgs
 from .base import ActionBase
-
-
-@dataclass
-class FilterArgs:
-    force_all: bool = False
-    running: bool = False
-    queued: bool = False
-    success: bool = False
-    failed: bool = False
-    killed: bool = False
-
-    @property
-    def all(self):
-        flags = all(not getattr(self, a) for a in STATUSES)
-        return self.force_all or flags
 
 
 class FilterActionBase(ActionBase):
