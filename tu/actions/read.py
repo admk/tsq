@@ -1,14 +1,15 @@
 import sys
 import time
 import platform
+import textwrap
+import functools
 from datetime import datetime
 from abc import abstractmethod
 
 import tabulate
-import textwrap
-import functools
 from blessed import Terminal
 
+from ..common import tqdm, FilterArgs
 from ..utils import timedelta_format
 from .base import register_action
 from .filter import FilterActionBase
@@ -110,11 +111,11 @@ class ListAction(ReadActionBase):
 
     @staticmethod
     def _color_status(status):
-        return COLOR_STATUS.get(status, term.normal)(status).replace('\x1b(B', '')
+        return COLOR_STATUS[status](status).replace('\x1b(B', '')
 
     @staticmethod
-    def _format_time(time):
-        return time.strftime('%m-%d %H:%M') if time else None
+    def _format_time(dt):
+        return dt.strftime('%m-%d %H:%M') if dt else None
 
     def format(self, args, tqdm_disable=False):
         info = self.backend.full_info(
@@ -266,6 +267,10 @@ class ExportAction(ReadActionBase):
 @register_action('outputs', 'Show job outputs', aliases=['out'])
 class OutputsAction(ReadActionBase):
     outputs_options = {
+        ('-i', '--interactive'): {
+            'action': 'store_true',
+            'help': 'Follow the output.',
+        },
         ('-t', '--tail'): {
             'type': int,
             'default': 0,
@@ -287,11 +292,48 @@ class OutputsAction(ReadActionBase):
         info = self.backend.job_info(self.ids, self.filters)
         if not info:
             return 'No jobs found.'
+        if args.interactive:
+            if len(info) > 1:
+                print('Cannot follow multiple outputs.')
+                return 1
+            self.backend.output(info[0], args.tail, shell=True)
+            return ''
         outputs = []
         for i in info:
             outputs.append(f'Job {i["id"]}:')
-            out = self.backend.output(i, args.tail)
+            out = self.backend.output(i, args.tail, shell=False)
             if not args.raw:
                 out = textwrap.indent(out, '> ') + '\n'
             outputs.append(out)
         return '\n'.join(outputs).rstrip()
+
+
+@register_action('wait', 'Wait for jobs to finish', aliases=['w'])
+class WaitAction(ReadActionBase):
+    wait_options = {
+        ('-p', '--progress'): {
+            'action': 'store_true',
+            'help': 'Show progress bar.',
+        },
+    }
+
+    def __init__(self, name, parser_kwargs):
+        super().__init__(name, parser_kwargs)
+        self.options.update(self.wait_options)
+
+    def main(self, args, tqdm_disable=False):
+        f = FilterArgs(running=True, queued=True)
+        info = self.backend.job_info(self.ids, f)
+        pbar = tqdm(total=len(info)) if args.progress else None
+        while True:
+            remaining = self.backend.job_info(self.ids, f)
+            if pbar:
+                pbar.n = len(info) - len(remaining)
+                pbar.refresh()
+            time.sleep(1)
+            if not remaining:
+                break
+        if pbar:
+            pbar.close()
+            print('')
+        return 0
