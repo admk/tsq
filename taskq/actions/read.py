@@ -292,12 +292,6 @@ class OutputsAction(ReadActionBase):
         info = self.backend.job_info(self.ids, self.filters)
         if not info:
             return 'No jobs found.'
-        if args.interactive:
-            if len(info) > 1:
-                print('Cannot follow multiple outputs.')
-                return 1
-            self.backend.output(info[0], args.tail, shell=True)
-            return ''
         outputs = []
         for i in info:
             outputs.append(f'Job {i["id"]}:')
@@ -306,6 +300,22 @@ class OutputsAction(ReadActionBase):
                 out = textwrap.indent(out, '> ') + '\n'
             outputs.append(out)
         return '\n'.join(outputs).rstrip()
+
+    def main(self, args):
+        if not args.interactive:
+            return super().main(args)
+        info = self.backend.job_info(self.ids, self.filters)
+        if not info:
+            print('No jobs found.')
+            return 1
+        if len(info) > 1:
+            print('Cannot follow multiple outputs.')
+            return 1
+        try:
+            self.backend.output(info[0], args.tail, shell=True)
+        except KeyboardInterrupt:
+            pass
+        return 0
 
 
 @register_action('wait', 'Wait for jobs to finish', aliases=['w'])
