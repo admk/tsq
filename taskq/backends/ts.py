@@ -181,5 +181,5 @@ class TaskSpoolerBackend(BackendBase):
     def remove(self, info, commit=True):
         if info['status'] == 'running':
             self.kill(info, commit=commit)
-            self._ts('-w', info['id'], check=False)
+            self._ts('-w', info['id'], commit=commit, check=False)
         return self._ts('-r', info['id'], commit=commit)
