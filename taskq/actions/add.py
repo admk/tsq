@@ -136,7 +136,7 @@ class AddAction(DryActionBase):
                 print('Use "-f -" to read commands from stdin.')
             return
         ids = []
-        for c in tqdm(commands):
+        for c in tqdm(commands, desc='add'):
             output = self.backend.add(
                 c, args.gpus, args.slots, commit=args.commit)
             ids.append(output)

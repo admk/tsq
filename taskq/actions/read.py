@@ -336,7 +336,7 @@ class WaitAction(ReadActionBase):
     def main(self, args, tqdm_disable=False):
         f = FilterArgs(running=True, queued=True)
         info = self.backend.job_info(self.ids, f)
-        pbar = tqdm(total=len(info)) if args.progress else None
+        pbar = tqdm(total=len(info), desc='wait') if args.progress else None
         while True:
             remaining = self.backend.job_info(self.ids, f)
             if pbar:

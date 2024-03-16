@@ -21,7 +21,7 @@ class WriteActionBase(FilterActionBase, DryActionBase):
 @register_action('kill', 'kill jobs', aliases=['k'])
 class KillAction(WriteActionBase):
     def kill(self, info, commit):
-        for i in tqdm(info):
+        for i in tqdm(info, desc='kill'):
             self.backend.kill(i, commit=commit)
 
     def main(self, args):
@@ -40,7 +40,7 @@ class RemoveAction(WriteActionBase):
     def remove(self, info, commit):
         queued = [i for i in info if i['status'] == 'queued']
         remaining = [i for i in info if i['status'] != 'queued']
-        for i in tqdm(queued + remaining):
+        for i in tqdm(queued + remaining, desc='remove'):
             self.backend.remove(i, commit=commit)
 
     def main(self, args):
@@ -57,7 +57,7 @@ class RemoveAction(WriteActionBase):
 class RerunAction(WriteActionBase):
     def rerun(self, info, commit):
         new_ids = []
-        for i in tqdm(info):
+        for i in tqdm(info, desc='rerun'):
             command = i['command']
             gpus = i['gpus_required']
             slots = i['slots_required']

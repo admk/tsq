@@ -121,7 +121,7 @@ class TaskSpoolerBackend(BackendBase):
         self, ids=None, filters=None, extra_func=None, tqdm_disable=False
     ):
         info = self.job_info(ids, filters)
-        for i in tqdm(info, disable=tqdm_disable):
+        for i in tqdm(info, disable=tqdm_disable, desc='info'):
             ji = self._ts('-i', i['id'])
             start_time = self.get_time(ji, 'Start time: ')
             end_time = self.get_time(ji, 'End time: ')

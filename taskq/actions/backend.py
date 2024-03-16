@@ -32,7 +32,7 @@ class BackendAction(ActionBase):
 
     def reset(self, args):
         info = self.backend.full_info(None, FilterArgs())
-        for i in tqdm(info):
+        for i in tqdm(info, desc='remove'):
             self.backend.remove(i)
         self.backend.backend_kill(args)
         print(f'Killed {self.backend.name} backend.')
