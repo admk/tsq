@@ -86,14 +86,14 @@ class AddAction(DryActionBase):
     @staticmethod
     def _extrapolate_inputs(command, from_file):
         if not STDIN_TTY:
-            inputs = sys.stdin.readlines()
+            inputs = sys.stdin.read().split('\n')
         else:
             inputs = []
         if from_file == '-':
             commands = inputs
         elif from_file:
             with open(from_file, 'r', encoding='utf-8') as f:
-                commands = f.readlines()
+                commands = f.read().split('\n')
         else:
             commands = []
         if command:
@@ -115,7 +115,7 @@ class AddAction(DryActionBase):
                 for j, a in enumerate(args):
                     c = c.replace(f'@{j + 1}', a)
                 new_commands.append(c)
-        return new_commands
+        return [c for c in new_commands if c]
 
     def main(self, args):
         commands = self._extrapolate_inputs(args.command, args.from_file)
