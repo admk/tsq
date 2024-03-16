@@ -294,6 +294,8 @@ class OutputsAction(ReadActionBase):
             return 'No jobs found.'
         outputs = []
         for i in info:
+            if i['status'] in ['queued']:
+                continue
             outputs.append(f'Job {i["id"]}:')
             out = self.backend.output(i, args.tail, shell=False)
             if not args.raw:
