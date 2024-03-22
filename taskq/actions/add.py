@@ -35,6 +35,11 @@ class AddAction(DryActionBase):
                 'Read commands from a file, one per line. '
                 'If "-", read from standard input.',
         },
+        ('-s', '--separator'): {
+            'type': str,
+            'default': ',',
+            'help': 'Separator for arguments from standard input.',
+        },
         ('command', ): {
             'type': str,
             'nargs': argparse.REMAINDER,
@@ -84,7 +89,7 @@ class AddAction(DryActionBase):
             commands, r'\{([^}]+)\}', lambda s: s.split(','))
 
     @staticmethod
-    def _extrapolate_inputs(command, from_file):
+    def _extrapolate_inputs(command, from_file, sep=','):
         if not STDIN_TTY:
             inputs = sys.stdin.read().split('\n')
         else:
@@ -110,17 +115,19 @@ class AddAction(DryActionBase):
             line = line.strip()
             if not line:
                 continue
-            args = line.split(',')
+            args = line.split(sep)
             for c in commands:
                 for j, a in enumerate(args):
-                    c = c.replace(f'@{j + 1}', a)
+                    c = c.replace(f'@{j + 1}', a.strip())
                 new_commands.append(c)
-        return [c for c in new_commands if c]
+        return new_commands
 
     def main(self, args):
-        commands = self._extrapolate_inputs(args.command, args.from_file)
+        commands = self._extrapolate_inputs(
+            args.command, args.from_file, args.separator)
         commands = self._extrapolate_ranges(commands)
         commands = self._extrapolate_sets(commands)
+        commands = [c.strip() for c in commands if c.strip()]
         if args.unique:
             info = self.backend.full_info(None, FilterArgs())
             queued_commands = [i['command'] for i in info]
