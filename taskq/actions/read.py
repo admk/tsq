@@ -264,7 +264,7 @@ class ExportAction(ReadActionBase):
             raise ValueError(f'Unknown format: {args.export_format}')
 
 
-@register_action('outputs', 'Show job outputs', aliases=['out'])
+@register_action('outputs', 'show job outputs', aliases=['out'])
 class OutputsAction(ReadActionBase):
     outputs_options = {
         ('-i', '--interactive'): {
@@ -320,7 +320,7 @@ class OutputsAction(ReadActionBase):
         return 0
 
 
-@register_action('wait', 'Wait for jobs to finish', aliases=['w'])
+@register_action('wait', 'wait for jobs to finish', aliases=['w'])
 class WaitAction(ReadActionBase):
     wait_options = {
         ('-p', '--progress'): {

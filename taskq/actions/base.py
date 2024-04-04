@@ -1,7 +1,7 @@
 from abc import abstractmethod
 from typing import Mapping, Type
 
-from ..backends import BACKENDS
+from ..backends import BACKENDS, BackendNotFoundError
 
 
 class ActionBase:
@@ -26,7 +26,11 @@ class ActionBase:
         except KeyError:
             print(f'Invalid backend: {backend}')
             backend_cls = BACKENDS['dummy']
-        self.backend = backend_cls(backend, config)
+        try:
+            self.backend = backend_cls(backend, config)
+        except BackendNotFoundError as e:
+            print(f'Backend {backend!r} not available, reason: {e}.')
+            return 1
         return self.main(args)
 
 

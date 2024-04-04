@@ -1,8 +1,6 @@
-import os
 import re
 import shlex
 import datetime
-import subprocess
 
 from ..common import tqdm, STATUSES, file_tail_lines, tail_lines, dict_simplify
 from .base import register_backend, BackendBase
@@ -12,33 +10,12 @@ from .base import register_backend, BackendBase
 class TaskSpoolerBackend(BackendBase):
     def __init__(self, name, config):
         super().__init__(name, config)
-        group = self.config.get('group', 'default')
+        socket = self.config.get('socket', 'default')
         slots = self.config.get('slots')
-        if slots == 'auto':
-            try:
-                nv = subprocess.check_output(['nvidia-smi', '-L'])
-                slots = len(nv.splitlines())
-            except (FileNotFoundError, subprocess.CalledProcessError):
-                slots = 1
         self.env.setdefault('TS_SLOTS', str(slots))
-        self.env.setdefault('TS_SOCKET', f'/tmp/ts-{group}.sock')
+        self.env.setdefault('TS_SOCKET', f'/tmp/ts-{socket}.sock')
         self.env = dict_simplify(self.env, not_value=True)
-        self._ts_command = self.config.get('command', 'ts')
-
-    def _ts(self, *args, commit=True, shell=False, check=True):
-        cmd = [self._ts_command] + [str(a) for a in args]
-        if not commit:
-            print(' '.join(cmd))
-            return None
-        env = dict(os.environ, **self.env)
-        if shell:
-            subprocess.run(' '.join(cmd), shell=True, env=env, check=check)
-            return None
-        p = subprocess.run(
-            cmd, capture_output=True, env=env, check=check)
-        out = p.stdout.decode('utf-8').strip()
-        out += p.stderr.decode('utf-8').strip()
-        return out
+        self.backend_getset('slots', slots)
 
     def backend_getset(self, key, value=None):
         slot_keys = [
@@ -48,29 +25,26 @@ class TaskSpoolerBackend(BackendBase):
         ]
         if key in slot_keys:
             if value is None:
-                return int(self._ts('-S') or -1)
-            return self._ts('-S', value)
+                return int(self.exec('-S') or -1)
+            return self.exec('-S', value)
 
     def backend_info(self):
         info = {
             'name': 'Task Spooler',
-            'command': self._ts_command,
+            'command': self._command,
         }
-        version = self._ts('-V') or ''
+        version = self.exec('-V') or ''
         result = re.search(r'(v[\.\d]+)', version)
         if result:
             info['version'] = result.group(1)
         return info
 
     def backend_kill(self, args):
-        self._ts('-K')
-
-    def backend_command(self, command, commit=True):
-        return self._ts(*command, commit=True, check=False)
+        self.exec('-K')
 
     def job_info(self, ids=None, filters=None):
         info = []
-        tsout = self._ts()
+        tsout = self.exec()
         if not tsout:
             return info
         for l in tsout.splitlines()[1:]:
@@ -122,7 +96,7 @@ class TaskSpoolerBackend(BackendBase):
     ):
         info = self.job_info(ids, filters)
         for i in tqdm(info, disable=tqdm_disable, desc='info'):
-            ji = self._ts('-i', i['id'])
+            ji = self.exec('-i', i['id'])
             start_time = self.get_time(ji, 'Start time: ')
             end_time = self.get_time(ji, 'End time: ')
             if not start_time:
@@ -132,7 +106,7 @@ class TaskSpoolerBackend(BackendBase):
             else:
                 delta = end_time - start_time
             try:
-                pid = int(self._ts('-p', i['id'], check=False) or -1)
+                pid = int(self.exec('-p', i['id'], check=False) or -1)
             except ValueError:
                 pid = None
             new_info = {
@@ -146,7 +120,7 @@ class TaskSpoolerBackend(BackendBase):
                 'start_time': start_time,
                 'end_time': end_time,
                 'time_run': delta,
-                'output_file': self._ts('-o', i['id'], check=False),
+                'output_file': self.exec('-o', i['id'], check=False),
                 'pid': pid,
             }
             i.update({k: v for k, v in new_info.items() if v is not None})
@@ -156,11 +130,11 @@ class TaskSpoolerBackend(BackendBase):
 
     def output(self, info, tail, shell=False):
         if shell:
-            self._ts('-c', info['id'], check=False, shell=True)
+            self.exec('-c', info['id'], check=False, shell=True)
             return ''
         if info['status'] in ['success', 'failed', 'killed']:
-            return tail_lines(self._ts('-c', info['id'], check=False), tail)
-        f = info.get('output_file') or self._ts('-o', info['id'], check=False)
+            return tail_lines(self.exec('-c', info['id'], check=False), tail)
+        f = info.get('output_file') or self.exec('-o', info['id'], check=False)
         return file_tail_lines(f, tail) if f else ''
 
     def add(self, command, gpus=None, slots=None, commit=True):
@@ -173,13 +147,13 @@ class TaskSpoolerBackend(BackendBase):
         torun += ['-N', slots]
         command = command.replace('\n', '\\n')
         torun += shlex.split(command)
-        return self._ts(*torun, commit=commit)
+        return self.exec(*torun, commit=commit)
 
     def kill(self, info, commit=True):
-        self._ts('-k', info['id'], commit=commit)
+        self.exec('-k', info['id'], commit=commit)
 
     def remove(self, info, commit=True):
         if info['status'] == 'running':
             self.kill(info, commit=commit)
-            self._ts('-w', info['id'], commit=commit, check=False)
-        return self._ts('-r', info['id'], commit=commit)
+            self.exec('-w', info['id'], commit=commit, check=False)
+        return self.exec('-r', info['id'], commit=commit)

@@ -1,6 +1,7 @@
 group = "default"
 slots = "auto"
 backend = "ts"
+socket = "taskq"
 
 [alloc]
 gpus = 1

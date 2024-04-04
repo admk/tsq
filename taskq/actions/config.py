@@ -47,8 +47,11 @@ class ConfigAction(ActionBase):
         if args.value is None:
             print(self.getset(config, args.key))
             return
-        with open(args.rc_file, 'r', encoding='utf-8') as f:
-            rc_config = tomlkit.load(f)
+        try:
+            with open(args.rc_file, 'r', encoding='utf-8') as f:
+                rc_config = tomlkit.load(f)
+        except FileNotFoundError:
+            rc_config = {}
         self.getset(rc_config, args.key, args.value)
         with open(args.rc_file, 'w', encoding='utf-8') as f:
             f.write(tomlkit.dumps(rc_config))

@@ -24,7 +24,7 @@ class AddAction(DryActionBase):
         ('-u', '--unique'): {
             'action': 'store_true',
             'help':
-                'Only add unique commands.'
+                'Only add unique commands. '
                 'If a command is already in the queue, '
                 'it will also be skipped.',
         },

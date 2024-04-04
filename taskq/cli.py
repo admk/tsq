@@ -4,6 +4,7 @@ import argparse
 
 import tomlkit
 
+from . import __version__
 from .common import dict_merge
 from .actions import INFO
 from .backends import BACKENDS
@@ -11,6 +12,10 @@ from .backends import BACKENDS
 
 class CLI:
     base_options = {
+        ('-V', '--version'): {
+            'action': 'store_true',
+            'help': 'print the version and exit',
+        },
         ('-rc', '--rc-file'): {
             'type': str,
             'default': None,
@@ -92,6 +97,9 @@ class CLI:
         if all(a not in INFO['aliases'] for a in args):
             if '-h' in args or '--help' in args:
                 self.parser.print_help()
+                sys.exit(0)
+            if '-V' in args or '--version' in args:
+                print(__version__)
                 sys.exit(0)
             args = [INFO['default']] + args
         args = self.parser.parse_args(args)
