@@ -4,6 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tsq"
+dynamic = ["version"]
 authors = [
   { name="admk" },
 ]
@@ -21,7 +22,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-dynamic = ["version"]
 
 [project.scripts]
 tq = "taskq.cli:main"
@@ -34,4 +34,4 @@ Issues = "https://github.com/admk/tu/issues"
 include = ["taskq", "taskq.*"]
 
 [tool.setuptools.dynamic]
-version = {attr = "package.__version__"}
+version = {attr = "taskq.__version__"}
