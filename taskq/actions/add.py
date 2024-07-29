@@ -117,7 +117,8 @@ class AddAction(DryActionBase):
                 continue
             args = line.split(sep)
             for c in commands:
-                for j, a in enumerate(args):
+                # order reversed to avoid replacing "@1" in "@10"
+                for j, a in reversed(list(enumerate(args))):
                     c = c.replace(f'@{j + 1}', a.strip())
                 new_commands.append(c)
         return new_commands
