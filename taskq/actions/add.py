@@ -28,6 +28,10 @@ class AddAction(DryActionBase):
                 'If a command is already in the queue, '
                 'it will also be skipped.',
         },
+        ('-i', '--interact'): {
+            'action': 'store_true',
+            'help': 'Interact with the added command that is running.',
+        },
         ('-f', '--from-file'): {
             'type': str,
             'default': None,
