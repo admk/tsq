@@ -15,7 +15,7 @@ class BackendBase:
         if self._command and not which(self._command):
             raise BackendNotFoundError(
                 f'{self._command!r}: command not found')
-        slots = self.config.get('slots')
+        slots = self.config.get('slots', 'auto')
         if slots == 'auto':
             try:
                 nv = subprocess.check_output(['nvidia-smi', '-L'])
