@@ -135,8 +135,8 @@ class AddAction(DryActionBase):
         alphabet = string.ascii_letters + string.digits
         new_commands = []
         for c in commands:
-            random.seed(c)
-            uid = ''.join(random.choice(alphabet) for i in range(8))
+            rand = random.Random(c)
+            uid = ''.join(rand.choice(alphabet) for i in range(8))
             c = c.replace('@u', uid)
             new_commands.append(c)
         return new_commands
