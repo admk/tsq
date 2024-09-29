@@ -4,7 +4,7 @@ from .base import register_backend, BackendBase
 @register_backend('dummy')
 class DummyBackend(BackendBase):
     def __init__(self, name, config):
-        config['command'] = None
+        config['command'] = ''
         super().__init__(name, config)
 
     def backend_info(self):

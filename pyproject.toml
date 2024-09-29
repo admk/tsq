@@ -27,8 +27,8 @@ classifiers = [
 tq = "taskq.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/admk/tu"
-Issues = "https://github.com/admk/tu/issues"
+Homepage = "https://github.com/admk/tsq"
+Issues = "https://github.com/admk/tsq/issues"
 
 [tool.setuptools.packages.find]
 include = ["taskq", "taskq.*"]

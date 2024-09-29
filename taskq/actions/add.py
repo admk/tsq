@@ -1,5 +1,7 @@
 import re
 import sys
+import string
+import random
 import textwrap
 import argparse
 import itertools
@@ -56,6 +58,41 @@ class AddAction(DryActionBase):
         self.options.update(self.add_options)
 
     @staticmethod
+    def _extrapolate_inputs(command, from_file, sep=','):
+        if not STDIN_TTY:
+            inputs = sys.stdin.read().split('\n')
+        else:
+            inputs = []
+        if from_file == '-':
+            commands = inputs
+        elif from_file:
+            with open(from_file, 'r', encoding='utf-8') as f:
+                commands = f.read().split('\n')
+        else:
+            commands = []
+        if command:
+            commands += [' '.join(command)]
+        if from_file == '-':
+            # if we read from stdin for commands,
+            # we can't read from stdin again for arguments
+            return commands
+        if not inputs:
+            # nothing in stdin, so we can't extrapolate arguments
+            return commands
+        new_commands = []
+        for line in inputs:
+            line = line.strip()
+            if not line:
+                continue
+            args = line.split(sep)
+            for c in commands:
+                # order reversed to avoid replacing "@1" in "@10"
+                for j, a in reversed(list(enumerate(args))):
+                    c = c.replace(f'@{j + 1}', a.strip())
+                new_commands.append(c)
+        return new_commands
+
+    @staticmethod
     def _regex_extrapolate(texts, regex, extrapolator):
         new_texts = []
         for text in texts:
@@ -93,38 +130,15 @@ class AddAction(DryActionBase):
             commands, r'\{([^}]+)\}', lambda s: s.split(','))
 
     @staticmethod
-    def _extrapolate_inputs(command, from_file, sep=','):
-        if not STDIN_TTY:
-            inputs = sys.stdin.read().split('\n')
-        else:
-            inputs = []
-        if from_file == '-':
-            commands = inputs
-        elif from_file:
-            with open(from_file, 'r', encoding='utf-8') as f:
-                commands = f.read().split('\n')
-        else:
-            commands = []
-        if command:
-            commands += [' '.join(command)]
-        if from_file == '-':
-            # if we read from stdin for commands,
-            # we can't read from stdin again for arguments
-            return commands
-        if not inputs:
-            # nothing in stdin, so we can't extrapolate arguments
-            return commands
+    def _extrapolate_unique_id(commands):
+        # add a unique identifier for each command
+        alphabet = string.ascii_letters + string.digits
         new_commands = []
-        for line in inputs:
-            line = line.strip()
-            if not line:
-                continue
-            args = line.split(sep)
-            for c in commands:
-                # order reversed to avoid replacing "@1" in "@10"
-                for j, a in reversed(list(enumerate(args))):
-                    c = c.replace(f'@{j + 1}', a.strip())
-                new_commands.append(c)
+        for c in commands:
+            random.seed(c)
+            uid = ''.join(random.choice(alphabet) for i in range(8))
+            c = c.replace('@u', uid)
+            new_commands.append(c)
         return new_commands
 
     def main(self, args):
@@ -132,6 +146,7 @@ class AddAction(DryActionBase):
             args.command, args.from_file, args.separator)
         commands = self._extrapolate_ranges(commands)
         commands = self._extrapolate_sets(commands)
+        commands = self._extrapolate_unique_id(commands)
         commands = [c.strip() for c in commands if c.strip()]
         if args.unique:
             info = self.backend.full_info(None, FilterArgs())
@@ -139,9 +154,8 @@ class AddAction(DryActionBase):
             commands = list(dict.fromkeys(commands))
             skipped = [c for c in commands if c in queued_commands]
             commands = [c for c in commands if c not in queued_commands]
-            if skipped:
-                print('Skipped:')
-                print(textwrap.indent('\n'.join(skipped), '  '))
+        else:
+            skipped = []
         if not commands:
             print('No command to add.')
             if STDIN_TTY:
@@ -154,3 +168,6 @@ class AddAction(DryActionBase):
             ids.append(output)
         if any(ids):
             print('Added:', ', '.join(ids))
+        if skipped:
+            print('Skipped commands:')
+            print(textwrap.indent('\n'.join(skipped), '  '))
