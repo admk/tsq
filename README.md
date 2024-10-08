@@ -5,10 +5,10 @@
 ## Installation
 
 ```shell
-pip install tsq
+pip install --user tsq
 ```
 
 Cutting edge version from the repository:
 ```shell
-pip install git+https://github.com/admk/tsq.git
+pip install --user git+https://github.com/admk/tsq.git
 ```
