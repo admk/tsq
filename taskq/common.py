@@ -27,9 +27,16 @@ class FilterArgs:
         return self.force_all or flags
 
 
-STDIN_TTY = os.isatty(sys.stdin.fileno())
-STDOUT_TTY = os.isatty(sys.stdout.fileno())
-STDERR_TTY = os.isatty(sys.stderr.fileno())
+def isatty(stream):
+    try:
+        return os.isatty(stream.fileno())
+    except (AttributeError, OSError):
+        return False
+
+
+STDIN_TTY = isatty(sys.stdin)
+STDOUT_TTY = isatty(sys.stdout)
+STDERR_TTY = isatty(sys.stderr)
 
 
 def tail_lines(text, tail):

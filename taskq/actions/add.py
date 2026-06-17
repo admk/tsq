@@ -157,6 +157,10 @@ class AddAction(DryActionBase):
         else:
             skipped = []
         if not commands:
+            if skipped:
+                print('Skipped commands:')
+                print(textwrap.indent('\n'.join(skipped), '  '))
+                return
             print('No command to add.')
             if STDIN_TTY:
                 print('Use "-f -" to read commands from stdin.')

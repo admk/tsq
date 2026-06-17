@@ -30,6 +30,13 @@ tq = "taskq.cli:main"
 Homepage = "https://github.com/admk/tsq"
 Issues = "https://github.com/admk/tsq/issues"
 
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "PyYAML",
+    "toml",
+]
+
 [tool.setuptools.packages.find]
 include = ["taskq", "taskq.*"]
 
