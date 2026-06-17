@@ -7,10 +7,11 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-from ..common import STATUSES, dict_simplify, file_tail_lines
-from .base import BackendBase, register_backend
+from ...common import STATUSES, dict_simplify, file_tail_lines
+from ..base import BackendBase, register_backend
 
 
 @register_backend('tmux')
@@ -18,13 +19,20 @@ class TmuxBackend(BackendBase):
     def __init__(self, name, config):
         super().__init__(name, config)
         self.env = dict_simplify(self.env, not_value=True)
-        state_dir = self.config.get('state_dir', '~/.local/state/taskq')
-        socket = self.config.get('socket', 'taskq')
+        self.socket = self.config.get('socket', 'taskq')
+        self.socket_path = self.config.get('socket_path')
         group = self.config.get('group', 'default')
-        self.state_dir = Path(os.path.expanduser(state_dir)) / socket / group
+        state_dir = self.config.get('state_dir', '~/.local/state/taskq')
+        state_name = self.socket_path or self.socket
+        self.state_dir = (
+            Path(os.path.expanduser(state_dir))
+            / self._sanitize_name(state_name)
+            / group
+        )
         self.jobs_dir = self.state_dir / 'jobs'
         self.counter_file = self.state_dir / 'next_id'
-        self.prefix = self._sanitize_name(f'taskq-{socket}-{group}')
+        self.prefix = self._sanitize_name(f'taskq-{state_name}-{group}')
+        self.broker_session = f'{self.prefix}-broker'
 
     @staticmethod
     def _sanitize_name(name):
@@ -53,6 +61,14 @@ class TmuxBackend(BackendBase):
         if not path or not os.path.exists(path):
             return ''
         return file_tail_lines(path, tail)
+
+    def _socket_args(self):
+        if self.socket_path:
+            return ['-S', os.path.expanduser(self.socket_path)]
+        return ['-L', self.socket]
+
+    def _tmux_cmd(self, *args):
+        return [self._command] + self._socket_args() + [str(a) for a in args]
 
     def _ensure_state(self):
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -106,7 +122,7 @@ class TmuxBackend(BackendBase):
         return f'{self.prefix}-{job_id}'
 
     def _tmux(self, *args, capture_output=True, check=True):
-        cmd = [self._command] + [str(a) for a in args]
+        cmd = self._tmux_cmd(*args)
         env = dict(os.environ, **self.env)
         if capture_output:
             p = subprocess.run(cmd, capture_output=True, env=env, check=check)
@@ -118,7 +134,7 @@ class TmuxBackend(BackendBase):
 
     def _session_exists(self, session):
         result = subprocess.run(
-            [self._command, 'has-session', '-t', session],
+            self._tmux_cmd('has-session', '-t', session),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -141,6 +157,64 @@ class TmuxBackend(BackendBase):
         else:
             args += ['-S', '-']
         return self._tmux(*args, check=False)
+
+    def _broker_command(self):
+        command = [
+            sys.executable,
+            '-m',
+            'taskq.backends.tmux.broker',
+            '--state-dir',
+            str(self.state_dir),
+            '--prefix',
+            self.prefix,
+            '--command',
+            self._command,
+            '--slots',
+            str(self.config.get('slots', 1)),
+            '--history-limit',
+            str(self.config.get('history_limit', 100000)),
+            '--interval',
+            str(self.config.get('broker_interval', 1)),
+            '--gpu-free-perc',
+            str(self.config.get('gpu_free_perc', 90)),
+        ]
+        visible_gpus = self.config.get(
+            'visible_gpus',
+            self.env.get('TS_VISIBLE_DEVICES') or os.environ.get('TS_VISIBLE_DEVICES'),
+        )
+        if visible_gpus:
+            command += ['--visible-gpus', str(visible_gpus)]
+        if self.socket_path:
+            command += ['--socket-path', os.path.expanduser(self.socket_path)]
+        else:
+            command += ['--socket', self.socket]
+        return shlex.join(command)
+
+    def _ensure_broker(self, commit=True):
+        if self._session_exists(self.broker_session):
+            return
+        broker_command = self._broker_command()
+        if not commit:
+            print(
+                ' '.join(self._tmux_cmd(
+                    'new-session', '-d', '-s', self.broker_session,
+                    '-n', 'broker', broker_command))
+            )
+            return
+        self._ensure_state()
+        self._tmux(
+            'new-session', '-d', '-s', self.broker_session,
+            '-n', 'broker', '-c', os.getcwd(), broker_command)
+
+    def _wait_for_session(self, job_id):
+        while True:
+            meta = self._read_meta(job_id)
+            session = meta.get('session')
+            if session and self._session_exists(session):
+                return session
+            if meta.get('status') not in ['queued', 'running']:
+                return None
+            time.sleep(float(self.config.get('broker_interval', 1)))
 
     def _refresh_meta(self, meta):
         if meta.get('status') != 'running':
@@ -217,12 +291,21 @@ class TmuxBackend(BackendBase):
             self.config['slots'] = value
         return self.config.get('slots')
 
+    def backend_command(self, command, commit=True):
+        if not commit:
+            print(' '.join(self._tmux_cmd(*command)))
+            return None
+        return self._tmux(*command, check=False)
+
     def backend_info(self):
         info = {
             'name': 'tmux',
             'command': self._command,
+            'socket': self.socket_path or self.socket,
             'state_dir': str(self.state_dir),
             'prefix': self.prefix,
+            'broker_session': self.broker_session,
+            'broker_running': self._session_exists(self.broker_session),
         }
         version = self.exec('-V') or ''
         result = re.search(r'tmux\s+(.+)$', version)
@@ -254,8 +337,16 @@ class TmuxBackend(BackendBase):
         meta = self._read_meta(info['id'])
         session = meta.get('session')
         if shell:
+            if meta.get('status') == 'queued':
+                self._ensure_broker()
+                print(f'Job {info["id"]} is queued; waiting for a slot...')
+                session = self._wait_for_session(info['id'])
             if session and self._session_exists(session):
-                command = 'switch-client' if os.environ.get('TMUX') else 'attach-session'
+                command = (
+                    'switch-client'
+                    if os.environ.get('TMUX')
+                    else 'attach-session'
+                )
                 return self._tmux(
                     command, '-t', session,
                     capture_output=False, check=False)
@@ -276,10 +367,8 @@ class TmuxBackend(BackendBase):
         slots = slots if slots is not None else alloc_config.get('slots', 1)
         if not commit:
             session = self._session_name('<id>')
-            print(
-                f'{self._command} new-session -d -s {session} '
-                f'-c {shlex.quote(os.getcwd())} {shlex.quote(command)}'
-            )
+            print(f'queue {command!r} for tmux session {session}')
+            self._ensure_broker(commit=False)
             return '<id>'
         job_id = self._next_id()
         session = self._session_name(job_id)
@@ -290,15 +379,16 @@ class TmuxBackend(BackendBase):
         meta = {
             'id': job_id,
             'command': command,
-            'status': 'running',
+            'status': 'queued',
             'exitcode': None,
             'slots_required': slots,
             'gpus_required': gpus,
-            'gpu_ids': os.environ.get('CUDA_VISIBLE_DEVICES', ''),
+            'gpu_ids': '',
             'enqueue_time': self._now(),
-            'start_time': self._now(),
+            'start_time': None,
             'end_time': None,
             'output_file': str(output_file),
+            'wrapper': str(wrapper),
             'session': session,
             'pid': None,
             'cwd': cwd,
@@ -310,6 +400,9 @@ class TmuxBackend(BackendBase):
                 '#!/usr/bin/env bash',
                 'set +e',
                 env_exports,
+                'if [ "${TASKQ_GPU_IDS+x}" ]; then',
+                '    export CUDA_VISIBLE_DEVICES="$TASKQ_GPU_IDS"',
+                'fi',
                 f'export TASKQ_JOB_ID={job_id}',
                 f'export TASKQ_SESSION={shlex.quote(session)}',
                 f'printf "[taskq] job {job_id} started at %s\\n" "$(date)"',
@@ -342,30 +435,14 @@ class TmuxBackend(BackendBase):
             encoding='utf-8',
         )
         wrapper.chmod(0o700)
-        self._tmux(
-            'new-session', '-d', '-s', session, '-n', f'job-{job_id}',
-            '-c', cwd)
-        self._tmux(
-            'set-option', '-t', session, 'history-limit',
-            str(self.config.get('history_limit', 100000)),
-            check=False)
-        self._tmux(
-            'pipe-pane', '-o', '-t', f'{session}:0.0',
-            f'cat >> {shlex.quote(str(output_file))}',
-            check=False)
-        self._tmux(
-            'send-keys', '-t', f'{session}:0.0',
-            '-l', shlex.quote(str(wrapper)))
-        self._tmux('send-keys', '-t', f'{session}:0.0', 'Enter')
-        meta['pid'] = self._pane_pid(session)
-        self._write_meta(meta)
+        self._ensure_broker()
         return str(job_id)
 
     def kill(self, info, commit=True):
         meta = self._read_meta(info['id'])
         session = meta.get('session')
         if not commit:
-            print(f'{self._command} kill-session -t {session}')
+            print(f'{self._command} {" ".join(self._socket_args())} kill-session -t {session}')
             return
         if session and self._session_exists(session):
             self._tmux('kill-session', '-t', session, check=False)

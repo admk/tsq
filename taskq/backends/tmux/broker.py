@@ -1,0 +1,273 @@
+import argparse
+import datetime
+import json
+import os
+import random
+import shlex
+import subprocess
+import time
+from pathlib import Path
+
+
+def now():
+    return datetime.datetime.now().isoformat()
+
+
+def tmux_cmd(args, *tmux_args):
+    cmd = [args.command]
+    if args.socket_path:
+        cmd += ['-S', args.socket_path]
+    else:
+        cmd += ['-L', args.socket]
+    cmd += [str(a) for a in tmux_args]
+    return cmd
+
+
+def tmux(args, *tmux_args, capture_output=True, check=True):
+    cmd = tmux_cmd(args, *tmux_args)
+    if capture_output:
+        p = subprocess.run(cmd, capture_output=True, check=check)
+        out = p.stdout.decode('utf-8').strip()
+        out += p.stderr.decode('utf-8').strip()
+        return out
+    subprocess.run(cmd, check=check)
+    return ''
+
+
+def session_exists(args, session):
+    result = subprocess.run(
+        tmux_cmd(args, 'has-session', '-t', session),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def pane_pid(args, session):
+    try:
+        pid = tmux(args, 'display-message', '-p', '-t', session, '#{pane_pid}')
+        return int(pid) if pid else None
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+
+
+def parse_gpu_ids(value):
+    if not value:
+        return []
+    return [
+        int(part.strip())
+        for part in str(value).split(',')
+        if part.strip() and part.strip() != '-1'
+    ]
+
+
+def visible_gpu_ids(args):
+    visible = args.visible_gpus or os.environ.get('TS_VISIBLE_DEVICES')
+    return parse_gpu_ids(visible)
+
+
+def query_free_gpus(args):
+    cmd = [
+        'nvidia-smi',
+        '--query-gpu=index,memory.free,memory.total',
+        '--format=csv,noheader,nounits',
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, check=True, text=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    visible = set(visible_gpu_ids(args))
+    free = []
+    for line in result.stdout.splitlines():
+        parts = [part.strip() for part in line.split(',')]
+        if len(parts) != 3:
+            continue
+        try:
+            gpu_id = int(parts[0])
+            memory_free = float(parts[1])
+            memory_total = float(parts[2])
+        except ValueError:
+            continue
+        if visible and gpu_id not in visible:
+            continue
+        if memory_total and memory_free > args.gpu_free_perc / 100 * memory_total:
+            free.append(gpu_id)
+    if not visible:
+        return free
+    return [gpu_id for gpu_id in visible_gpu_ids(args) if gpu_id in free]
+
+
+def jobs_dir(args):
+    return Path(args.state_dir) / 'jobs'
+
+
+def meta_path(args, job_id):
+    return jobs_dir(args) / str(job_id) / 'meta.json'
+
+
+def read_meta(path):
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def write_meta(meta, path):
+    tmp = path.with_suffix('.json.tmp')
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(meta, f, indent=2, sort_keys=True)
+        f.write('\n')
+    os.replace(tmp, path)
+
+
+def all_meta(args):
+    root = jobs_dir(args)
+    if not root.exists():
+        return []
+    metas = []
+    for path in sorted(root.glob('*/meta.json')):
+        try:
+            metas.append((path, read_meta(path)))
+        except (json.JSONDecodeError, OSError):
+            continue
+    return metas
+
+
+def refresh_running(args, path, meta):
+    if meta.get('status') != 'running':
+        return meta
+    session = meta.get('session')
+    if session and session_exists(args, session):
+        pid = pane_pid(args, session)
+        if pid and meta.get('pid') != pid:
+            meta['pid'] = pid
+            write_meta(meta, path)
+        return meta
+    meta.update({
+        'status': 'failed',
+        'end_time': now(),
+    })
+    write_meta(meta, path)
+    return meta
+
+
+def start_job(args, path, meta, gpu_ids=None):
+    job_id = meta['id']
+    session = meta.get('session') or f'{args.prefix}-{job_id}'
+    output_file = meta.get('output_file')
+    wrapper = meta.get('wrapper')
+    if not wrapper:
+        return
+    if output_file:
+        Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+    meta.update({
+        'status': 'running',
+        'start_time': now(),
+        'session': session,
+        'pid': None,
+        'gpu_ids': ','.join(str(gpu_id) for gpu_id in gpu_ids or []),
+    })
+    write_meta(meta, path)
+    tmux(
+        args,
+        'new-session', '-d', '-s', session, '-n', f'job-{job_id}',
+        '-c', meta.get('cwd') or os.getcwd(),
+    )
+    tmux(
+        args,
+        'set-option', '-t', session, 'history-limit',
+        str(args.history_limit),
+        check=False,
+    )
+    if output_file:
+        tmux(
+            args,
+            'pipe-pane', '-o', '-t', f'{session}:0.0',
+            f'cat >> {shlex.quote(output_file)}',
+            check=False,
+        )
+    if gpu_ids:
+        taskq_gpu_ids = ','.join(str(gpu_id) for gpu_id in gpu_ids)
+    else:
+        taskq_gpu_ids = '-1'
+    run_command = (
+        f'TASKQ_GPU_IDS={shlex.quote(taskq_gpu_ids)} '
+        f'{shlex.quote(wrapper)}'
+    )
+    tmux(args, 'send-keys', '-t', f'{session}:0.0', '-l', run_command)
+    tmux(args, 'send-keys', '-t', f'{session}:0.0', 'Enter')
+    pid = pane_pid(args, session)
+    if pid:
+        meta['pid'] = pid
+        write_meta(meta, path)
+
+
+def tick(args):
+    metas = []
+    for path, meta in all_meta(args):
+        metas.append((path, refresh_running(args, path, meta)))
+
+    running_slots = sum(
+        int(meta.get('slots_required') or 1)
+        for _, meta in metas
+        if meta.get('status') == 'running'
+    )
+    used_gpu_ids = set()
+    for _, meta in metas:
+        if meta.get('status') == 'running':
+            used_gpu_ids.update(parse_gpu_ids(meta.get('gpu_ids')))
+    free_gpu_ids = query_free_gpus(args)
+    if free_gpu_ids is not None:
+        random.shuffle(free_gpu_ids)
+    queued = sorted(
+        (
+            (path, meta)
+            for path, meta in metas
+            if meta.get('status') == 'queued'
+        ),
+        key=lambda item: int(item[1].get('id') or 0),
+    )
+    for path, meta in queued:
+        required = int(meta.get('slots_required') or 1)
+        can_start = running_slots + required <= args.slots
+        can_oversubscribe = running_slots == 0 and required > args.slots
+        if not can_start and not can_oversubscribe:
+            continue
+        gpus_required = int(meta.get('gpus_required') or 0)
+        gpu_ids = []
+        if gpus_required:
+            if free_gpu_ids is None:
+                continue
+            available = [
+                gpu_id
+                for gpu_id in free_gpu_ids
+                if gpu_id not in used_gpu_ids
+            ]
+            if len(available) < gpus_required:
+                continue
+            gpu_ids = available[:gpus_required]
+        start_job(args, path, meta, gpu_ids)
+        running_slots += required
+        used_gpu_ids.update(gpu_ids)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--state-dir', required=True)
+    parser.add_argument('--prefix', required=True)
+    parser.add_argument('--command', default='tmux')
+    parser.add_argument('--socket', default='taskq')
+    parser.add_argument('--socket-path', default=None)
+    parser.add_argument('--slots', type=int, default=1)
+    parser.add_argument('--history-limit', type=int, default=100000)
+    parser.add_argument('--interval', type=float, default=1)
+    parser.add_argument('--gpu-free-perc', type=int, default=90)
+    parser.add_argument('--visible-gpus', default=None)
+    args = parser.parse_args(argv)
+    jobs_dir(args).mkdir(parents=True, exist_ok=True)
+    while True:
+        tick(args)
+        time.sleep(args.interval)
+
+
+if __name__ == '__main__':
+    main()
