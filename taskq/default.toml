@@ -1,6 +1,6 @@
 group = "default"
 slots = "auto"
-backend = "ts"
+backend = "tmux"
 socket = "taskq"
 
 [alloc]
@@ -10,6 +10,11 @@ slots = 1
 [env]
 
 [groups.default]
+
+[backends.tmux]
+command = "tmux"
+state_dir = "~/.local/state/taskq"
+history_limit = 100000
 
 [backends.ts]
 command = "ts"

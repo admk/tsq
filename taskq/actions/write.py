@@ -12,7 +12,7 @@ class WriteActionBase(FilterActionBase, DryActionBase):
         args = FilterActionBase.transform_args(self, args)
         if not self.has_filters:
             print(
-                'tsu: flags or ids must be specified '
+                'tq: flags or ids must be specified '
                 f'for dangerous action {self.name!r}.')
             sys.exit(1)
         return args

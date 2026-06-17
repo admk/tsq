@@ -168,6 +168,10 @@ class AddAction(DryActionBase):
             ids.append(output)
         if any(ids):
             print('Added:', ', '.join(ids))
+        if args.interact and len(ids) > 1:
+            print('Cannot interact with multiple added jobs.')
+        elif args.interact and ids and args.commit:
+            self.backend.output({'id': int(ids[0])}, 0, shell=True)
         if skipped:
             print('Skipped commands:')
             print(textwrap.indent('\n'.join(skipped), '  '))

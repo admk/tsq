@@ -1,4 +1,4 @@
-from . import dummy, ts
+from . import dummy, tmux, ts
 from .base import BACKENDS, BackendNotFoundError
 
 

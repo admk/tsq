@@ -80,7 +80,7 @@ class CLI:
         return config
 
     def _resolve_config(self, args, config):
-        backend = args.backend or config.get('backend', 'ts')
+        backend = args.backend or config.get('backend', 'tmux')
         group = args.group or config.get('group', 'default')
         backend_config = config.get('backends', {}).get(backend, {})
         group_config = config.get('groups', {}).get(group, {})
