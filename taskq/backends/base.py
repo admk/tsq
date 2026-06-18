@@ -15,14 +15,18 @@ class BackendBase:
         if self._command and not which(self._command):
             raise BackendNotFoundError(
                 f'{self._command!r}: command not found')
-        slots = self.config.get('slots', 'auto')
+        slots = self._resolve_slots(self.config.get('slots', 'auto'))
+        self.config['slots'] = slots
+
+    @staticmethod
+    def _resolve_slots(slots):
         if slots == 'auto':
             try:
                 nv = subprocess.check_output(['nvidia-smi', '-L'])
-                slots = len(nv.splitlines())
+                return len(nv.splitlines())
             except (FileNotFoundError, subprocess.CalledProcessError):
-                slots = 1
-        self.config['slots'] = slots
+                return 1
+        return int(slots)
 
     def exec(self, *args, commit=True, shell=False, check=True):
         cmd = [self._command] + [str(a) for a in args]

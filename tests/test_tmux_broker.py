@@ -100,6 +100,37 @@ def test_broker_oversubscribes_single_large_job(broker_args, fake_tmux, monkeypa
     assert read_meta(path)['status'] == 'running'
 
 
+def test_broker_uses_runtime_slots_config(broker_args, fake_tmux, monkeypatch):
+    broker_args.slots = 1
+    p1 = write_meta(broker_args.state_dir, 1)
+    p2 = write_meta(broker_args.state_dir, 2)
+    config_path = Path(broker_args.state_dir) / 'broker.json'
+    config_path.write_text(json.dumps({'slots': 2}), encoding='utf-8')
+    monkeypatch.setattr(broker, 'query_free_gpus', lambda args: [])
+
+    broker.tick(broker_args)
+
+    assert read_meta(p1)['status'] == 'running'
+    assert read_meta(p2)['status'] == 'running'
+
+
+def test_broker_runtime_slots_caches_unchanged_config(broker_args, monkeypatch):
+    config_path = Path(broker_args.state_dir) / 'broker.json'
+    config_path.write_text(json.dumps({'slots': 3}), encoding='utf-8')
+    calls = {'count': 0}
+    original_read_meta = broker.read_meta
+
+    def counting_read_meta(path):
+        calls['count'] += 1
+        return original_read_meta(path)
+
+    monkeypatch.setattr(broker, 'read_meta', counting_read_meta)
+
+    assert broker.runtime_slots(broker_args) == 3
+    assert broker.runtime_slots(broker_args) == 3
+    assert calls['count'] == 1
+
+
 def test_broker_gpu_allocation_and_cpu_minus_one(broker_args, fake_tmux, monkeypatch):
     calls, _ = fake_tmux
     p1 = write_meta(broker_args.state_dir, 1, gpus_required=1)

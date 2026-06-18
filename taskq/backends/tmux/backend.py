@@ -16,7 +16,7 @@ from ..base import BackendBase, register_backend
 
 @register_backend('tmux')
 class TmuxBackend(BackendBase):
-    BROKER_VERSION = '6'
+    BROKER_VERSION = '7'
 
     def __init__(self, name, config):
         super().__init__(name, config)
@@ -33,6 +33,7 @@ class TmuxBackend(BackendBase):
         )
         self.jobs_dir = self.state_dir / 'jobs'
         self.counter_file = self.state_dir / 'next_id'
+        self.broker_config_file = self.state_dir / 'broker.json'
         self.tmux_config_file = Path(os.path.expanduser(
             self.config.get('tmux_config')
             or self.config.get('config_file')
@@ -121,6 +122,15 @@ class TmuxBackend(BackendBase):
 
     def _ensure_state(self):
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
+
+    def _write_broker_config(self):
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.broker_config_file.with_suffix('.json.tmp')
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump({'slots': self.config.get('slots', 1)}, f,
+                      indent=2, sort_keys=True)
+            f.write('\n')
+        os.replace(tmp, self.broker_config_file)
 
     def _next_id(self):
         self._ensure_state()
@@ -273,6 +283,7 @@ class TmuxBackend(BackendBase):
             return
         self._ensure_tmux_config()
         self._ensure_state()
+        self._write_broker_config()
         self._source_tmux_config()
         if self._session_exists(self.broker_session):
             if self._broker_version() == self.BROKER_VERSION:
@@ -492,7 +503,15 @@ class TmuxBackend(BackendBase):
         if key not in slot_keys:
             return None
         if value is not None:
-            self.config['slots'] = value
+            if value == 'null':
+                return self.config.get('slots')
+            old_slots = self.config.get('slots')
+            new_slots = self._resolve_slots(value)
+            self.config['slots'] = new_slots
+            if old_slots != new_slots and self._session_exists(self.broker_session):
+                self._write_broker_config()
+                if self._broker_version() != self.BROKER_VERSION:
+                    self._ensure_broker()
         return self.config.get('slots')
 
     def backend_command(self, command, commit=True):

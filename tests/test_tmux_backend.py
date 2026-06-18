@@ -40,6 +40,8 @@ def tmux_backend(monkeypatch, tmp_path):
             return '\n'.join(sorted(sessions))
         if args and args[0] == 'new-session':
             sessions.add(str(args[3]))
+        if args[:2] == ('kill-session', '-t'):
+            sessions.discard(str(args[2]))
         if args[:3] == ('display-message', '-p', '-t'):
             return '4321'
         if args and args[0] == 'capture-pane':
@@ -144,6 +146,25 @@ def test_tmux_keeps_current_broker(tmux_backend):
     killed = [call[0][2] for call in tmux_backend.calls
               if call[0][:2] == ('kill-session', '-t')]
     assert tmux_backend.broker_session not in killed
+
+
+def test_tmux_config_slots_updates_current_broker_config(tmux_backend):
+    tmux_backend.sessions.add(tmux_backend.broker_session)
+    tmux_backend._broker_version = lambda: TmuxBackend.BROKER_VERSION
+
+    assert tmux_backend.backend_getset('slots', '4') == 4
+
+    killed = [call[0][2] for call in tmux_backend.calls
+              if call[0][:2] == ('kill-session', '-t')]
+    assert tmux_backend.broker_session not in killed
+    broker_commands = [
+        call[0][-1] for call in tmux_backend.calls
+        if call[0][:3] == ('new-session', '-d', '-s')
+        and call[0][3] == tmux_backend.broker_session
+    ]
+    assert not broker_commands
+    config = json.loads(tmux_backend.broker_config_file.read_text())
+    assert config['slots'] == 4
 
 
 def test_tmux_job_info_full_info_and_filters(tmux_backend):

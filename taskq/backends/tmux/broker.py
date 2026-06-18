@@ -109,6 +109,32 @@ def meta_path(args, job_id):
     return jobs_dir(args) / str(job_id) / 'meta.json'
 
 
+def broker_config_path(args):
+    return Path(args.state_dir) / 'broker.json'
+
+
+def runtime_slots(args):
+    path = broker_config_path(args)
+    try:
+        stat = path.stat()
+    except OSError:
+        args._runtime_slots_cache = (None, args.slots)
+        return args.slots
+
+    signature = (stat.st_mtime_ns, stat.st_size)
+    cache = getattr(args, '_runtime_slots_cache', None)
+    if cache and cache[0] == signature:
+        return cache[1]
+
+    try:
+        data = read_meta(path)
+        slots = int(data.get('slots', args.slots))
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        slots = args.slots
+    args._runtime_slots_cache = (signature, slots)
+    return slots
+
+
 def read_meta(path):
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
@@ -300,6 +326,7 @@ def tick(args):
     free_gpu_ids = query_free_gpus(args)
     if free_gpu_ids is not None:
         random.shuffle(free_gpu_ids)
+    slots = runtime_slots(args)
     queued = sorted(
         (
             (path, meta)
@@ -310,8 +337,8 @@ def tick(args):
     )
     for path, meta in queued:
         required = int(meta.get('slots_required') or 1)
-        can_start = running_slots + required <= args.slots
-        can_oversubscribe = running_slots == 0 and required > args.slots
+        can_start = running_slots + required <= slots
+        can_oversubscribe = running_slots == 0 and required > slots
         if not can_start and not can_oversubscribe:
             continue
         gpus_required = int(meta.get('gpus_required') or 0)
