@@ -225,15 +225,18 @@ def start_job(args, path, meta, gpu_ids=None):
         taskq_gpu_ids = ','.join(str(gpu_id) for gpu_id in gpu_ids)
     else:
         taskq_gpu_ids = '-1'
-    run_command = (
-        f'TASKQ_GPU_IDS={shlex.quote(taskq_gpu_ids)} '
-        f'exec {shlex.quote(wrapper)}'
-    )
-    tmux(
-        args,
-        'new-session', '-d', '-s', session, '-n', f'job-{job_id}',
-        '-c', meta.get('cwd') or os.getcwd(), run_command,
-    )
+    run_command = 'exec "$TASKQ_WRAPPER"'
+    try:
+        tmux(
+            args,
+            'new-session', '-d', '-s', session, '-n', f'job-{job_id}',
+            '-e', f'TASKQ_GPU_IDS={taskq_gpu_ids}',
+            '-e', f'TASKQ_WRAPPER={wrapper}',
+            '-c', meta.get('cwd') or os.getcwd(), run_command,
+        )
+    except subprocess.CalledProcessError as e:
+        mark_start_failed(meta, path, e)
+        return
     tmux(
         args,
         'set-option', '-t', session, 'history-limit',
@@ -259,6 +262,25 @@ def start_job(args, path, meta, gpu_ids=None):
     if pid:
         current['pid'] = pid
         write_meta(current, path)
+
+
+def mark_start_failed(meta, path, error):
+    output_file = meta.get('output_file')
+    message = str(error)
+    stderr = getattr(error, 'stderr', None)
+    if stderr:
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode('utf-8', errors='replace')
+        message += f'\n{stderr.strip()}'
+    if output_file:
+        with open(output_file, 'a', encoding='utf-8') as f:
+            f.write(f'[taskq] failed to start tmux session: {message}\n')
+    meta.update({
+        'status': 'failed',
+        'exitcode': getattr(error, 'returncode', None),
+        'end_time': now(),
+    })
+    write_meta(meta, path)
 
 
 def tick(args):

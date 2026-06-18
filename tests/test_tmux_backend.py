@@ -65,6 +65,7 @@ def test_tmux_registered_and_socket_commands(tmux_backend):
     ]
     tmux_backend._ensure_tmux_config()
     config = tmux_backend.tmux_config_file.read_text()
+    assert 'set -g default-shell /bin/sh' in config
     assert 'set -g status off' in config
     assert 'remain-on-exit off' in config
     assert tmux_backend.backend_command(['list-sessions'], commit=False) is None
@@ -90,16 +91,21 @@ def test_tmux_add_queues_job_and_ensures_broker(tmux_backend):
     job_id = tmux_backend.add('echo hi', gpus=1, slots=2)
     meta = read_meta(tmux_backend, int(job_id))
     assert meta['status'] == 'queued'
+    assert meta['argv'] == ['echo', 'hi']
     assert meta['gpus_required'] == 1
     assert meta['slots_required'] == 2
     assert meta['gpu_ids'] == ''
     wrapper = (tmux_backend._job_dir(int(job_id)) / 'run.sh').read_text()
+    assert wrapper.startswith('#!/bin/sh\n')
+    assert 'set -- echo hi' in wrapper
+    assert '    "$@"' in wrapper
     assert 'CUDA_VISIBLE_DEVICES' in wrapper
     assert 'exec "${SHELL:-/bin/sh}"' not in wrapper
+    assert 'bash -lc' not in wrapper
     assert 'exit "$exitcode"' in wrapper
     assert 'exec > >(tee' not in wrapper
     assert '>> "$output_file"' in wrapper
-    assert 'for _ in {1..100}; do' in wrapper
+    assert 'while [ "$i" -lt 100 ]; do' in wrapper
     assert meta['start_file'].endswith('/start')
     assert tmux_backend.broker_session in tmux_backend.sessions
 

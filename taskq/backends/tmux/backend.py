@@ -16,7 +16,7 @@ from ..base import BackendBase, register_backend
 
 @register_backend('tmux')
 class TmuxBackend(BackendBase):
-    BROKER_VERSION = '4'
+    BROKER_VERSION = '6'
 
     def __init__(self, name, config):
         super().__init__(name, config)
@@ -76,6 +76,7 @@ class TmuxBackend(BackendBase):
             'set -g prefix C-b',
             'bind-key C-b send-prefix',
             'bind-key d detach-client',
+            'set -g default-shell /bin/sh',
             'set -g status off',
             f'set -g history-limit {history_limit}',
             'setw -g remain-on-exit off',
@@ -572,9 +573,11 @@ class TmuxBackend(BackendBase):
         wrapper = job_dir / 'run.sh'
         start_file = job_dir / 'start'
         cwd = os.getcwd()
+        argv = shlex.split(command)
         meta = {
             'id': job_id,
             'command': command,
+            'argv': argv,
             'status': 'queued',
             'exitcode': None,
             'slots_required': slots,
@@ -594,14 +597,17 @@ class TmuxBackend(BackendBase):
         env_exports = self._encode_env(self.env)
         wrapper.write_text(
             '\n'.join([
-                '#!/usr/bin/env bash',
+                '#!/bin/sh',
                 'set +e',
+                f'set -- {shlex.join(argv)}',
                 f'mkdir -p {shlex.quote(str(output_file.parent))}',
                 f'touch {shlex.quote(str(output_file))}',
                 f'start_file={shlex.quote(str(start_file))}',
-                'for _ in {1..100}; do',
+                'i=0',
+                'while [ "$i" -lt 100 ]; do',
                 '    [ -e "$start_file" ] && break',
                 '    sleep 0.05',
+                '    i=$((i + 1))',
                 'done',
                 'rm -f "$start_file"',
                 env_exports,
@@ -612,8 +618,12 @@ class TmuxBackend(BackendBase):
                 f'export TASKQ_SESSION={shlex.quote(session)}',
                 f'output_file={shlex.quote(str(output_file))}',
                 f'printf "[taskq] job {job_id} started at %s\\n" "$(date)"',
-                f'bash -lc {shlex.quote(command)}',
-                'exitcode=$?',
+                'if [ "$#" -eq 0 ]; then',
+                '    exitcode=127',
+                'else',
+                '    "$@"',
+                '    exitcode=$?',
+                'fi',
                 f'{shlex.quote(sys.executable)} - '
                 f'{shlex.quote(str(self._meta_file(job_id)))} '
                 '"$exitcode" <<\'PY\'',

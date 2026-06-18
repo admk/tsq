@@ -114,8 +114,10 @@ def test_broker_gpu_allocation_and_cpu_minus_one(broker_args, fake_tmux, monkeyp
     assert read_meta(p2)['status'] == 'queued'
     assert read_meta(p3)['status'] == 'running'
     new_sessions = [call for call in calls if call[:2] == ('new-session', '-d')]
-    assert any('TASKQ_GPU_IDS=0 exec ' in call[-1] for call in new_sessions)
-    assert any('TASKQ_GPU_IDS=-1 exec ' in call[-1] for call in new_sessions)
+    assert any('-e' in call and 'TASKQ_GPU_IDS=0' in call for call in new_sessions)
+    assert any('-e' in call and 'TASKQ_GPU_IDS=-1' in call for call in new_sessions)
+    assert all(call[-1] == 'exec "$TASKQ_WRAPPER"' for call in new_sessions)
+    assert all('TASKQ_GPU_IDS=' not in call[-1] for call in new_sessions)
     assert not any(call and call[0] == 'send-keys' for call in calls)
     pipe_panes = [call for call in calls if call and call[0] == 'pipe-pane']
     assert len(pipe_panes) == 2
@@ -247,6 +249,29 @@ def test_start_job_does_not_overwrite_completed_metadata(
     assert meta['status'] == 'success'
     assert meta['exitcode'] == 0
     assert meta['pid'] is None
+
+
+def test_start_job_marks_failed_when_tmux_new_session_fails(
+    broker_args, fake_tmux, monkeypatch
+):
+    path = write_meta(broker_args.state_dir, 1)
+    original_tmux = broker.tmux
+
+    def failing_new_session(args, *tmux_args, **kwargs):
+        if tmux_args[:2] == ('new-session', '-d'):
+            raise subprocess.CalledProcessError(
+                returncode=2,
+                cmd='tmux new-session',
+                stderr=b'bad shell syntax',
+            )
+        return original_tmux(args, *tmux_args, **kwargs)
+
+    monkeypatch.setattr(broker, 'tmux', failing_new_session)
+    broker.start_job(broker_args, path, read_meta(path))
+    meta = read_meta(path)
+    assert meta['status'] == 'failed'
+    assert meta['exitcode'] == 2
+    assert 'bad shell syntax' in Path(meta['output_file']).read_text()
 
 
 def test_tmux_cmd_socket_path(broker_args):
