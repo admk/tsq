@@ -61,7 +61,16 @@ class TmuxBackend(BackendBase):
         return '\n'.join(
             f'export {key}={shlex.quote(str(value))}'
             for key, value in env.items()
+            if re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', key)
         )
+
+    @classmethod
+    def _capture_job_env(cls, environ, config_env):
+        captured = {
+            key: value
+            for key, value in environ.items()
+        }
+        return dict(config_env, **captured)
 
     @staticmethod
     def _tail_file(path, tail):
@@ -557,15 +566,10 @@ class TmuxBackend(BackendBase):
             out = self._tail_file(meta.get('output_file'), tail)
         return out
 
-    def add(self, command, gpus=None, slots=None, commit=True):
+    def add(self, command, gpus=None, slots=None):
         alloc_config = self.config.get('alloc', {})
         gpus = gpus if gpus is not None else alloc_config.get('gpus', 1)
         slots = slots if slots is not None else alloc_config.get('slots', 1)
-        if not commit:
-            session = self._session_name('<id>')
-            print(f'queue {command!r} for tmux session {session}')
-            self._ensure_broker(commit=False)
-            return '<id>'
         job_id = self._next_id()
         session = self._session_name(job_id)
         job_dir = self._job_dir(job_id)
@@ -594,7 +598,8 @@ class TmuxBackend(BackendBase):
             'cwd': cwd,
         }
         self._write_meta(meta)
-        env_exports = self._encode_env(self.env)
+        job_env = self._capture_job_env(os.environ, self.env)
+        env_exports = self._encode_env(job_env)
         wrapper.write_text(
             '\n'.join([
                 '#!/bin/sh',

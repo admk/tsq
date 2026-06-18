@@ -31,14 +31,14 @@ def test_cli_help_lists_fake_backend(fake_backend, rc_file, capsys):
 def test_add_single_command_and_resources(fake_backend, rc_file, capsys):
     _, out = run_cli(['add', '-G', '2', '-N', '3', 'echo', 'hi'], rc_file, capsys)
     backend = fake_backend.instances[-1]
-    assert backend.calls[-1] == ('add', 'echo hi', 2, 3, True)
+    assert backend.calls[-1] == ('add', 'echo hi', 2, 3)
     assert 'Added: 100' in out
 
 
 def test_add_preserves_shell_argument_quoting(fake_backend, rc_file, capsys):
     run_cli(['add', 'sh', '-c', 'exit 1'], rc_file, capsys)
     assert (
-        'add', "sh -c 'exit 1'", None, None, True
+        'add', "sh -c 'exit 1'", None, None
     ) in fake_backend.instances[-1].calls
 
 
@@ -77,8 +77,16 @@ def test_add_interactive_multiple_rejected(fake_backend, rc_file, tmp_path, caps
 
 
 def test_add_dry_run(fake_backend, rc_file, capsys):
-    run_cli(['add', '-d', 'echo', 'hi'], rc_file, capsys)
-    assert ('add', 'echo hi', None, None, False) in fake_backend.instances[-1].calls
+    _, out = run_cli(['add', '-d', 'echo', 'hi'], rc_file, capsys)
+    assert out.strip() == 'tq add -N 1 echo hi'
+    assert not [
+        call for call in fake_backend.instances[-1].calls
+        if call[0] == 'add'
+    ]
+
+    _, out = run_cli(['add', '-d', '-G', '2', '-N', '3', 'echo', '@u'], rc_file, capsys)
+    assert out.strip().startswith('tq add -G 2 -N 3 echo ')
+    assert '@u' not in out
 
 
 def test_add_extrapolates_stdin_arguments(monkeypatch):
@@ -113,7 +121,7 @@ def test_list_info_ids_commands_outputs_export(fake_backend, rc_file, capsys):
     assert 'python train.py' in out
 
     _, out = run_cli(['ids'], rc_file, capsys)
-    assert out.strip() == '1, 2, 3'
+    assert out.strip() == '1, 2, 3, 4'
 
     _, out = run_cli(['info', '1'], rc_file, capsys)
     assert 'Job 1:' in out
@@ -121,6 +129,11 @@ def test_list_info_ids_commands_outputs_export(fake_backend, rc_file, capsys):
 
     _, out = run_cli(['info', '3'], rc_file, capsys)
     assert '  status: success\n  exit_code: 0' in out
+
+    _, out = run_cli(['info', '-i'], rc_file, capsys)
+    assert 'Job 4:' in out
+    assert '  status: interrupted\n  exit_code: None' in out
+    assert 'Job 1:' not in out
 
     _, out = run_cli(['commands', '-j'], rc_file, capsys)
     assert 'python train.py' in out
@@ -140,12 +153,19 @@ def test_list_info_ids_commands_outputs_export(fake_backend, rc_file, capsys):
 
 
 def test_outputs_interactive_requires_single_job(fake_backend, rc_file, capsys):
-    result, out = run_cli(['outputs', '-i'], rc_file, capsys)
+    result, out = run_cli(['outputs', '-I'], rc_file, capsys)
     assert result == 1
     assert 'Cannot follow multiple outputs.' in out
 
-    run_cli(['outputs', '-i', '1'], rc_file, capsys)
+    run_cli(['outputs', '-I', '1'], rc_file, capsys)
     assert ('output', 1, 0, True) in fake_backend.instances[-1].calls
+
+
+def test_outputs_interrupted_filter_uses_lowercase_i(fake_backend, rc_file, capsys):
+    _, out = run_cli(['outputs', '-i'], rc_file, capsys)
+    assert 'Job 4:' in out
+    assert 'output-4' in out
+    assert 'Job 1:' not in out
 
 
 def test_interact_action_requires_single_job(fake_backend, rc_file, capsys):
@@ -185,12 +205,18 @@ def test_write_actions_and_danger_guard(fake_backend, rc_file, capsys):
     assert ('remove', 3, True) in fake_backend.instances[-1].calls
 
     run_cli(['rerun', '1'], rc_file, capsys)
-    assert ('add', 'python train.py', 1, 2, True) in fake_backend.instances[-1].calls
+    assert ('add', 'python train.py', 1, 2) in fake_backend.instances[-1].calls
 
     run_cli(['requeue', '1'], rc_file, capsys)
     calls = fake_backend.instances[-1].calls
-    assert ('add', 'python train.py', 1, 2, True) in calls
+    assert ('add', 'python train.py', 1, 2) in calls
     assert ('remove', 1, True) in calls
+
+    _, out = run_cli(['rerun', '-d', '1'], rc_file, capsys)
+    assert 'python train.py' in out
+    assert '<id>' in out
+    calls = fake_backend.instances[-1].calls
+    assert not [call for call in calls if call[0] == 'add']
 
 
 def test_backend_and_config_actions(fake_backend, rc_file, capsys):

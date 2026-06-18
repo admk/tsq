@@ -61,7 +61,11 @@ class RerunAction(WriteActionBase):
             command = i['command']
             gpus = i['gpus_required']
             slots = i['slots_required']
-            ji = self.backend.add(command, gpus, slots, commit=commit)
+            if not commit:
+                print(command)
+                ji = '<id>'
+            else:
+                ji = self.backend.add(command, gpus, slots)
             new_ids.append(ji)
         return new_ids
 

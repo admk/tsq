@@ -66,6 +66,20 @@ class FakeBackend(BackendBase):
                 'time_run': datetime.timedelta(minutes=1),
                 'output_file': 'out-3.log',
             },
+            {
+                'id': 4,
+                'status': 'interrupted',
+                'exitcode': None,
+                'command': 'sleep 10',
+                'slots_required': 1,
+                'gpus_required': 0,
+                'gpu_ids': '',
+                'enqueue_time': datetime.datetime(2024, 1, 1, 12, 0, 0),
+                'start_time': datetime.datetime(2024, 1, 1, 12, 1, 0),
+                'end_time': None,
+                'time_run': datetime.timedelta(minutes=2),
+                'output_file': 'out-4.log',
+            },
         ]
         cls.added_ids = []
 
@@ -128,8 +142,8 @@ class FakeBackend(BackendBase):
     def interact(self, info):
         self.calls.append(('interact', info['id']))
 
-    def add(self, command, gpus, slots, commit=True):
-        self.calls.append(('add', command, gpus, slots, commit))
+    def add(self, command, gpus, slots):
+        self.calls.append(('add', command, gpus, slots))
         new_id = str(100 + len(self.added_ids))
         self.added_ids.append(new_id)
         return new_id

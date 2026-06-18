@@ -272,7 +272,7 @@ class ExportAction(ReadActionBase):
 @register_action('outputs', 'show job outputs', aliases=['out'])
 class OutputsAction(ReadActionBase):
     outputs_options = {
-        ('-i', '--interactive'): {
+        ('-I', '--interactive'): {
             'action': 'store_true',
             'help': 'Follow the output.',
         },

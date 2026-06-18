@@ -141,7 +141,7 @@ class TaskSpoolerBackend(BackendBase):
         print('Interact action is not supported by the ts backend.')
         return ''
 
-    def add(self, command, gpus=None, slots=None, commit=True):
+    def add(self, command, gpus=None, slots=None):
         torun = []
         alloc_config = self.config.get('alloc', {})
         gpus = gpus if gpus is not None else alloc_config.get('gpus', 1)
@@ -151,7 +151,7 @@ class TaskSpoolerBackend(BackendBase):
         torun += ['-N', slots]
         command = command.replace('\n', '\\n')
         torun += shlex.split(command)
-        return self.exec(*torun, commit=commit)
+        return self.exec(*torun)
 
     def kill(self, info, commit=True):
         self.exec('-k', info['id'], commit=commit)

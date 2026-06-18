@@ -204,3 +204,21 @@ def test_tq_add_tmux_uses_shell_agnostic_broker_command(
     assert f'TASKQ_WRAPPER={meta["wrapper"]}' in job_call
     assert job_call[-1] == 'exec "$TASKQ_WRAPPER"'
     assert all('TASKQ_GPU_IDS=-1 exec' not in arg for arg in job_call)
+
+
+def test_tq_add_dry_run_prints_command_without_backend_details(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr('taskq.actions.add.STDIN_TTY', True)
+    fake_tmux_state = install_fake_tmux(tmp_path, monkeypatch)
+    rc_file = tmp_path / 'tq.toml'
+    state_root = tmp_path / 'state'
+    tmux_config = tmp_path / 'tmux.conf'
+    write_tmux_rc(rc_file, state_root, tmux_config)
+
+    code, out = run_cli(['add', '-d', 'sleep 1'], rc_file, capsys)
+
+    assert code is None
+    assert out.strip() == 'tq add -N 1 sleep 1'
+    assert not fake_tmux_state.exists()
+    assert not state_root.exists()

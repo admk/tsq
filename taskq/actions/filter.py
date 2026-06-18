@@ -40,7 +40,7 @@ class FilterActionBase(ActionBase):
             'action': 'store_true',
             'help': 'Perform the action on killed jobs.',
         },
-        ('--interrupted',): {
+        ('-i', '--interrupted'): {
             'action': 'store_true',
             'help': 'Perform the action on interrupted jobs.',
         },

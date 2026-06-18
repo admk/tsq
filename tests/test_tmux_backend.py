@@ -110,6 +110,21 @@ def test_tmux_add_queues_job_and_ensures_broker(tmux_backend):
     assert tmux_backend.broker_session in tmux_backend.sessions
 
 
+def test_tmux_add_captures_enqueue_environment(monkeypatch, tmux_backend):
+    monkeypatch.setenv('FOO', 'from-shell')
+    monkeypatch.setenv('CONFIG_WINS', 'from-shell')
+    monkeypatch.setenv('API_TOKEN', 'secret')
+    tmux_backend.env['CONFIG_WINS'] = 'from-config'
+
+    job_id = tmux_backend.add('printenv FOO CONFIG_WINS', gpus=0, slots=1)
+
+    wrapper = (tmux_backend._job_dir(int(job_id)) / 'run.sh').read_text()
+    assert 'export FOO=from-shell' in wrapper
+    assert 'export CONFIG_WINS=from-shell' in wrapper
+    assert 'export CONFIG_WINS=from-config' not in wrapper
+    assert 'export API_TOKEN=secret' in wrapper
+
+
 def test_tmux_restarts_old_broker(tmux_backend):
     tmux_backend.sessions.add(tmux_backend.broker_session)
     tmux_backend.add('echo hi', gpus=0, slots=1)

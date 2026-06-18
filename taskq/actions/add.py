@@ -145,6 +145,44 @@ class AddAction(DryActionBase):
             new_commands.append(c)
         return new_commands
 
+    @staticmethod
+    def _resolved_alloc(config, args):
+        alloc_config = config.get('alloc', {})
+        gpus = args.gpus if args.gpus is not None else alloc_config.get('gpus', 1)
+        slots = (
+            args.slots if args.slots is not None
+            else alloc_config.get('slots', 1)
+        )
+        return gpus, slots
+
+    @staticmethod
+    def _include_gpus(gpus):
+        try:
+            return int(gpus) > 0
+        except (TypeError, ValueError):
+            return bool(gpus)
+
+    @staticmethod
+    def _dry_command_argv(command):
+        argv = shlex.split(command)
+        if len(argv) == 1 and re.search(r'\s', argv[0]):
+            try:
+                split_arg = shlex.split(argv[0])
+            except ValueError:
+                return argv
+            if len(split_arg) > 1:
+                return split_arg
+        return argv
+
+    @classmethod
+    def _dry_add_command(cls, command, gpus, slots):
+        argv = ['tq', 'add']
+        if cls._include_gpus(gpus):
+            argv += ['-G', str(gpus)]
+        argv += ['-N', str(slots)]
+        argv += cls._dry_command_argv(command)
+        return shlex.join(argv)
+
     def main(self, args):
         commands = self._extrapolate_inputs(
             args.command, args.from_file, args.separator)
@@ -169,10 +207,20 @@ class AddAction(DryActionBase):
             if STDIN_TTY:
                 print('Use "-f -" to read commands from stdin.')
             return
+        if not args.commit:
+            gpus, slots = self._resolved_alloc(self.backend.config, args)
+            dry_commands = [
+                self._dry_add_command(c, gpus, slots)
+                for c in commands
+            ]
+            print('\n'.join(dry_commands))
+            if skipped:
+                print('Skipped commands:')
+                print(textwrap.indent('\n'.join(skipped), '  '))
+            return
         ids = []
         for c in tqdm(commands, desc='add'):
-            output = self.backend.add(
-                c, args.gpus, args.slots, commit=args.commit)
+            output = self.backend.add(c, args.gpus, args.slots)
             ids.append(output)
         if any(ids):
             print('Added:', ', '.join(ids))
