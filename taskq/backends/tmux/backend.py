@@ -332,7 +332,8 @@ class TmuxBackend(BackendBase):
             self._write_meta(meta)
             return meta
         meta.update({
-            'status': 'failed',
+            'status': 'interrupted',
+            'exitcode': None,
             'end_time': self._now(),
         })
         self._write_meta(meta)

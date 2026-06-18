@@ -176,11 +176,14 @@ def test_visible_gpus_from_environment(monkeypatch, broker_args):
     assert broker.visible_gpu_ids(broker_args) == [3, 4]
 
 
-def test_refresh_running_marks_missing_session_failed(broker_args, fake_tmux):
+def test_refresh_running_marks_missing_session_interrupted(broker_args, fake_tmux):
     path = write_meta(broker_args.state_dir, 1, status='running', session='missing')
     refreshed = broker.refresh_running(broker_args, path, read_meta(path))
-    assert refreshed['status'] == 'failed'
-    assert read_meta(path)['status'] == 'failed'
+    assert refreshed['status'] == 'interrupted'
+    assert refreshed['exitcode'] is None
+    meta = read_meta(path)
+    assert meta['status'] == 'interrupted'
+    assert meta['exitcode'] is None
 
 
 def test_refresh_running_keeps_completed_status_after_session_exits(

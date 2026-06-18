@@ -190,13 +190,17 @@ def test_tmux_kill_remove_and_backend_reset(tmux_backend):
     assert tmux_backend.broker_session in killed
 
 
-def test_tmux_refresh_marks_missing_running_session_failed(tmux_backend):
+def test_tmux_refresh_marks_missing_running_session_interrupted(tmux_backend):
     job_id = int(tmux_backend.add('echo hi', gpus=0, slots=1))
     meta = read_meta(tmux_backend, job_id)
     meta['status'] = 'running'
     (tmux_backend._job_dir(job_id) / 'meta.json').write_text(json.dumps(meta))
     info = tmux_backend.job_info(ids=[job_id], filters=FilterArgs())[0]
-    assert info['status'] == 'failed'
+    assert info['status'] == 'interrupted'
+    assert info['exitcode'] is None
+    meta = read_meta(tmux_backend, job_id)
+    assert meta['status'] == 'interrupted'
+    assert meta['exitcode'] is None
 
 
 def test_tmux_refresh_keeps_completed_status_after_session_exits(tmux_backend):

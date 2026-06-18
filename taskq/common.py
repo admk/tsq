@@ -9,7 +9,7 @@ def tqdm(*args, disable=None, **kwargs):
     return tqdm_(*args, **kwargs, delay=1, disable=disable)
 
 
-STATUSES = ['running', 'queued', 'success', 'failed', 'killed']
+STATUSES = ['running', 'queued', 'success', 'failed', 'killed', 'interrupted']
 
 
 @dataclass
@@ -20,6 +20,7 @@ class FilterArgs:
     success: bool = False
     failed: bool = False
     killed: bool = False
+    interrupted: bool = False
 
     @property
     def all(self):

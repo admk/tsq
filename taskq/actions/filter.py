@@ -40,6 +40,10 @@ class FilterActionBase(ActionBase):
             'action': 'store_true',
             'help': 'Perform the action on killed jobs.',
         },
+        ('--interrupted',): {
+            'action': 'store_true',
+            'help': 'Perform the action on interrupted jobs.',
+        },
     }
 
     def __init__(self, name, parser_kwargs):
@@ -70,6 +74,7 @@ class FilterActionBase(ActionBase):
             success=args.success,
             failed=args.failed,
             killed=args.killed,
+            interrupted=args.interrupted,
         )
 
     def transform_args(self, args):

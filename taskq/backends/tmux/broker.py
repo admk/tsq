@@ -171,7 +171,8 @@ def refresh_running(args, path, meta):
         write_meta(meta, path)
         return meta
     meta.update({
-        'status': 'failed',
+        'status': 'interrupted',
+        'exitcode': None,
         'end_time': now(),
     })
     write_meta(meta, path)

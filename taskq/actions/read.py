@@ -22,6 +22,7 @@ COLOR_STATUS = {
     'failed': term.red,
     'killed': term.orange,
     'success': term.blue,
+    'interrupted': term.orange,
 }
 
 
@@ -187,10 +188,14 @@ class InfoAction(ReadActionBase):
         outputs = []
         for i in info:
             outputs.append(f'Job {i["id"]}:')
+            i = dict(i)
+            exit_code = i.pop('exitcode', None)
             for k, v in i.items():
                 if k == 'id':
                     continue
                 outputs.append(f'  {k}: {v}')
+                if k == 'status':
+                    outputs.append(f'  exit_code: {exit_code}')
         return '\n'.join(outputs)
 
 

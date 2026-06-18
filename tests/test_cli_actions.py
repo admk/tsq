@@ -99,11 +99,12 @@ def test_filter_parse_ids_and_statuses():
     action = FilterActionBase('x', {'name': 'x'})
     args = argparse.Namespace(
         id='1-3,5', all=False, running=True, queued=False,
-        success=False, failed=False, killed=False,
+        success=False, failed=False, killed=False, interrupted=True,
     )
     action.transform_args(args)
     assert action.ids == [1, 2, 3, 5]
     assert action.filters.running
+    assert action.filters.interrupted
     assert not action.filters.all
 
 
@@ -116,6 +117,10 @@ def test_list_info_ids_commands_outputs_export(fake_backend, rc_file, capsys):
 
     _, out = run_cli(['info', '1'], rc_file, capsys)
     assert 'Job 1:' in out
+    assert '  status: running\n  exit_code: None' in out
+
+    _, out = run_cli(['info', '3'], rc_file, capsys)
+    assert '  status: success\n  exit_code: 0' in out
 
     _, out = run_cli(['commands', '-j'], rc_file, capsys)
     assert 'python train.py' in out
