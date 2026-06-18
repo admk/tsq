@@ -125,6 +125,9 @@ class FakeBackend(BackendBase):
         self.calls.append(('output', info['id'], tail, shell))
         return f'output-{info["id"]}'
 
+    def interact(self, info):
+        self.calls.append(('interact', info['id']))
+
     def add(self, command, gpus, slots, commit=True):
         self.calls.append(('add', command, gpus, slots, commit))
         new_id = str(100 + len(self.added_ids))

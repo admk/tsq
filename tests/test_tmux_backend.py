@@ -95,7 +95,10 @@ def test_tmux_add_queues_job_and_ensures_broker(tmux_backend):
     assert 'CUDA_VISIBLE_DEVICES' in wrapper
     assert 'exec "${SHELL:-/bin/sh}"' not in wrapper
     assert 'exit "$exitcode"' in wrapper
-    assert f'tee -a {meta["output_file"]}' in wrapper
+    assert 'exec > >(tee' not in wrapper
+    assert '>> "$output_file"' in wrapper
+    assert 'for _ in {1..100}; do' in wrapper
+    assert meta['start_file'].endswith('/start')
     assert tmux_backend.broker_session in tmux_backend.sessions
 
 
@@ -130,6 +133,7 @@ def test_tmux_job_info_full_info_and_filters(tmux_backend):
 
 
 def test_tmux_output_waits_and_attaches(monkeypatch, tmux_backend, capsys):
+    monkeypatch.delenv('TMUX', raising=False)
     job_id = int(tmux_backend.add('sleep 1', gpus=0, slots=1))
     meta = read_meta(tmux_backend, job_id)
     tmux_backend.sessions.discard(meta['session'])
@@ -144,6 +148,15 @@ def test_tmux_output_waits_and_attaches(monkeypatch, tmux_backend, capsys):
     assert waits['count'] == 1
     assert any(call[0][0] == 'attach-session' for call in tmux_backend.calls)
     assert 'waiting for a slot' in capsys.readouterr().out
+
+
+def test_tmux_interact_attaches(monkeypatch, tmux_backend):
+    monkeypatch.delenv('TMUX', raising=False)
+    job_id = int(tmux_backend.add('sleep 1', gpus=0, slots=1))
+    meta = read_meta(tmux_backend, job_id)
+    tmux_backend.sessions.add(meta['session'])
+    tmux_backend.interact({'id': job_id})
+    assert any(call[0][0] == 'attach-session' for call in tmux_backend.calls)
 
 
 def test_tmux_output_capture_and_file_fallback(tmux_backend):
@@ -202,7 +215,7 @@ def test_tmux_refresh_cleans_up_stale_legacy_shell(tmux_backend):
         'pid': 1234,
     })
     (tmux_backend._job_dir(job_id) / 'run.sh').write_text(
-        '#!/usr/bin/env bash\nsleep 1\nexit "$?"\n',
+        '#!/usr/bin/env bash\nsleep 1\nexport TASKQ_EXIT_CODE="$?"\nexec "${SHELL:-/bin/sh}"\n',
         encoding='utf-8',
     )
     (tmux_backend._job_dir(job_id) / 'meta.json').write_text(json.dumps(meta))
@@ -226,7 +239,7 @@ def test_tmux_refresh_treats_xonsh_as_stale_legacy_shell(tmux_backend):
         'pid': 1234,
     })
     (tmux_backend._job_dir(job_id) / 'run.sh').write_text(
-        '#!/usr/bin/env bash\nsleep 1\nexit "$?"\n',
+        '#!/usr/bin/env bash\nsleep 1\nexport TASKQ_EXIT_CODE="$?"\nexec "${SHELL:-/bin/sh}"\n',
         encoding='utf-8',
     )
     (tmux_backend._job_dir(job_id) / 'meta.json').write_text(json.dumps(meta))
@@ -235,3 +248,19 @@ def test_tmux_refresh_treats_xonsh_as_stale_legacy_shell(tmux_backend):
     tmux_backend._pane_current_command = lambda session: 'python3.11'
     info = tmux_backend.job_info(ids=[job_id], filters=FilterArgs())[0]
     assert info['status'] == 'failed'
+
+
+def test_tmux_refresh_keeps_new_gated_wrapper_running(tmux_backend):
+    job_id = int(tmux_backend.add('sleep 10', gpus=0, slots=1))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update({
+        'status': 'running',
+        'start_time': '2024-01-01T00:00:00',
+        'pid': 1234,
+    })
+    (tmux_backend._job_dir(job_id) / 'meta.json').write_text(json.dumps(meta))
+    tmux_backend.sessions.add(meta['session'])
+    tmux_backend._capture_pane = lambda session, tail: ''
+    tmux_backend._pane_current_command = lambda session: 'bash'
+    info = tmux_backend.job_info(ids=[job_id], filters=FilterArgs())[0]
+    assert info['status'] == 'running'

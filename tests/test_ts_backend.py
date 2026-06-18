@@ -130,3 +130,8 @@ def test_ts_init_without_nvidia_smi_uses_one_slot(monkeypatch):
         },
     )
     assert backend.config['slots'] == 1
+
+
+def test_ts_interact_unsupported(ts_backend, capsys):
+    ts_backend.interact({'id': 1, 'status': 'running'})
+    assert 'Interact action is not supported by the ts backend.' in capsys.readouterr().out

@@ -26,6 +26,7 @@ def write_meta(root, job_id, **overrides):
         'end_time': None,
         'output_file': str(job_dir / 'output.log'),
         'wrapper': str(wrapper),
+        'start_file': str(job_dir / 'start'),
         'session': f'session-{job_id}',
         'pid': None,
         'cwd': str(job_dir),
@@ -116,7 +117,27 @@ def test_broker_gpu_allocation_and_cpu_minus_one(broker_args, fake_tmux, monkeyp
     assert any('TASKQ_GPU_IDS=0 exec ' in call[-1] for call in new_sessions)
     assert any('TASKQ_GPU_IDS=-1 exec ' in call[-1] for call in new_sessions)
     assert not any(call and call[0] == 'send-keys' for call in calls)
-    assert not any(call and call[0] == 'pipe-pane' for call in calls)
+    pipe_panes = [call for call in calls if call and call[0] == 'pipe-pane']
+    assert len(pipe_panes) == 2
+
+
+def test_broker_releases_job_after_pipe_pane(broker_args, fake_tmux, monkeypatch):
+    calls, _ = fake_tmux
+    path = write_meta(broker_args.state_dir, 1)
+    monkeypatch.setattr(broker, 'query_free_gpus', lambda args: [])
+    broker.tick(broker_args)
+
+    meta = read_meta(path)
+    assert Path(meta['start_file']).exists()
+    new_index = next(
+        i for i, call in enumerate(calls)
+        if call[:2] == ('new-session', '-d')
+    )
+    pipe_index = next(
+        i for i, call in enumerate(calls)
+        if call and call[0] == 'pipe-pane'
+    )
+    assert new_index < pipe_index
 
 
 def test_broker_no_nvidia_smi_keeps_gpu_queued_but_runs_cpu(

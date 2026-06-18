@@ -207,6 +207,7 @@ def start_job(args, path, meta, gpu_ids=None):
     session = meta.get('session') or f'{args.prefix}-{job_id}'
     output_file = meta.get('output_file')
     wrapper = meta.get('wrapper')
+    start_file = meta.get('start_file')
     if not wrapper:
         return
     if output_file:
@@ -238,6 +239,15 @@ def start_job(args, path, meta, gpu_ids=None):
         str(args.history_limit),
         check=False,
     )
+    if output_file:
+        tmux(
+            args,
+            'pipe-pane', '-o', '-t', f'{session}:0.0',
+            f'cat >> {shlex.quote(output_file)}',
+            check=False,
+        )
+    if start_file:
+        Path(start_file).touch()
     try:
         current = read_meta(path)
     except OSError:

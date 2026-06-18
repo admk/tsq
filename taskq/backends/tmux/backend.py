@@ -16,7 +16,7 @@ from ..base import BackendBase, register_backend
 
 @register_backend('tmux')
 class TmuxBackend(BackendBase):
-    BROKER_VERSION = '2'
+    BROKER_VERSION = '4'
 
     def __init__(self, name, config):
         super().__init__(name, config)
@@ -404,7 +404,7 @@ class TmuxBackend(BackendBase):
             text = Path(wrapper).read_text(encoding='utf-8')
         except OSError:
             return True
-        return 'tee -a ' not in text
+        return 'start_file=' not in text and 'TASKQ_EXIT_CODE' in text
 
     def _has_started_long_enough(self, meta):
         start_time = self._parse_time(meta.get('start_time'))
@@ -568,6 +568,7 @@ class TmuxBackend(BackendBase):
         job_dir = self._job_dir(job_id)
         output_file = job_dir / 'output.log'
         wrapper = job_dir / 'run.sh'
+        start_file = job_dir / 'start'
         cwd = os.getcwd()
         meta = {
             'id': job_id,
@@ -582,6 +583,7 @@ class TmuxBackend(BackendBase):
             'end_time': None,
             'output_file': str(output_file),
             'wrapper': str(wrapper),
+            'start_file': str(start_file),
             'session': session,
             'pid': None,
             'cwd': cwd,
@@ -594,13 +596,19 @@ class TmuxBackend(BackendBase):
                 'set +e',
                 f'mkdir -p {shlex.quote(str(output_file.parent))}',
                 f'touch {shlex.quote(str(output_file))}',
-                f'exec > >(tee -a {shlex.quote(str(output_file))}) 2>&1',
+                f'start_file={shlex.quote(str(start_file))}',
+                'for _ in {1..100}; do',
+                '    [ -e "$start_file" ] && break',
+                '    sleep 0.05',
+                'done',
+                'rm -f "$start_file"',
                 env_exports,
                 'if [ "${TASKQ_GPU_IDS+x}" ]; then',
                 '    export CUDA_VISIBLE_DEVICES="$TASKQ_GPU_IDS"',
                 'fi',
                 f'export TASKQ_JOB_ID={job_id}',
                 f'export TASKQ_SESSION={shlex.quote(session)}',
+                f'output_file={shlex.quote(str(output_file))}',
                 f'printf "[taskq] job {job_id} started at %s\\n" "$(date)"',
                 f'bash -lc {shlex.quote(command)}',
                 'exitcode=$?',
@@ -623,7 +631,7 @@ class TmuxBackend(BackendBase):
                 '    f.write("\\n")',
                 'os.replace(tmp, path)',
                 'PY',
-                f'printf "[taskq] job {job_id} finished with exit code %s at %s\\n" "$exitcode" "$(date)"',
+                f'printf "[taskq] job {job_id} finished with exit code %s at %s\\n" "$exitcode" "$(date)" >> "$output_file"',
                 'exit "$exitcode"',
                 '',
             ]),

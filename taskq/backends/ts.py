@@ -137,6 +137,10 @@ class TaskSpoolerBackend(BackendBase):
         f = info.get('output_file') or self.exec('-o', info['id'], check=False)
         return file_tail_lines(f, tail) if f else ''
 
+    def interact(self, info):
+        print('Interact action is not supported by the ts backend.')
+        return ''
+
     def add(self, command, gpus=None, slots=None, commit=True):
         torun = []
         alloc_config = self.config.get('alloc', {})

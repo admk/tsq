@@ -143,6 +143,15 @@ def test_outputs_interactive_requires_single_job(fake_backend, rc_file, capsys):
     assert ('output', 1, 0, True) in fake_backend.instances[-1].calls
 
 
+def test_interact_action_requires_single_job(fake_backend, rc_file, capsys):
+    result, out = run_cli(['interact'], rc_file, capsys)
+    assert result == 1
+    assert 'Cannot interact with multiple jobs.' in out
+
+    run_cli(['interact', '1'], rc_file, capsys)
+    assert ('interact', 1) in fake_backend.instances[-1].calls
+
+
 def test_wait_exits_when_jobs_finish(fake_backend, rc_file, monkeypatch, capsys):
     calls = {'count': 0}
 

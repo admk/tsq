@@ -320,6 +320,23 @@ class OutputsAction(ReadActionBase):
         return 0
 
 
+@register_action('interact', 'attach to a running job', aliases=['i'])
+class InteractAction(FilterActionBase):
+    def main(self, args):
+        info = self.backend.job_info(self.ids, self.filters)
+        if not info:
+            print('No jobs found.')
+            return 1
+        if len(info) > 1:
+            print('Cannot interact with multiple jobs.')
+            return 1
+        try:
+            self.backend.interact(info[0])
+        except KeyboardInterrupt:
+            pass
+        return 0
+
+
 @register_action('wait', 'wait for jobs to finish', aliases=['w'])
 class WaitAction(ReadActionBase):
     wait_options = {

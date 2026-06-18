@@ -45,6 +45,9 @@ class BackendBase:
     def backend_command(self, command, commit=True):
         return self.exec(*command, commit=commit, check=False)
 
+    def interact(self, info):
+        return self.output(info, 0, shell=True)
+
     @abstractmethod
     def backend_info(self):
         raise NotImplementedError
