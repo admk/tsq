@@ -64,7 +64,9 @@ def test_tmux_registered_and_socket_commands(tmux_backend):
         '-L', 'shared', 'list-sessions'
     ]
     tmux_backend._ensure_tmux_config()
-    assert 'remain-on-exit off' in tmux_backend.tmux_config_file.read_text()
+    config = tmux_backend.tmux_config_file.read_text()
+    assert 'set -g status off' in config
+    assert 'remain-on-exit off' in config
     assert tmux_backend.backend_command(['list-sessions'], commit=False) is None
 
 

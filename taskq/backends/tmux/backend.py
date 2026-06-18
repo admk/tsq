@@ -76,6 +76,7 @@ class TmuxBackend(BackendBase):
             'set -g prefix C-b',
             'bind-key C-b send-prefix',
             'bind-key d detach-client',
+            'set -g status off',
             f'set -g history-limit {history_limit}',
             'setw -g remain-on-exit off',
             'setw -g allow-rename off',
