@@ -42,6 +42,7 @@ def broker_args(tmp_path):
         state_dir=str(tmp_path),
         prefix='taskq-test',
         command='tmux',
+        config_file=str(tmp_path / 'tmux.conf'),
         socket='taskq',
         socket_path=None,
         slots=2,
@@ -111,9 +112,11 @@ def test_broker_gpu_allocation_and_cpu_minus_one(broker_args, fake_tmux, monkeyp
     assert read_meta(p1)['gpu_ids'] == '0'
     assert read_meta(p2)['status'] == 'queued'
     assert read_meta(p3)['status'] == 'running'
-    send_keys = [call for call in calls if call and call[0] == 'send-keys']
-    assert any('TASKQ_GPU_IDS=0' in call for command in send_keys for call in command)
-    assert any('TASKQ_GPU_IDS=-1' in call for command in send_keys for call in command)
+    new_sessions = [call for call in calls if call[:2] == ('new-session', '-d')]
+    assert any('TASKQ_GPU_IDS=0 exec ' in call[-1] for call in new_sessions)
+    assert any('TASKQ_GPU_IDS=-1 exec ' in call[-1] for call in new_sessions)
+    assert not any(call and call[0] == 'send-keys' for call in calls)
+    assert not any(call and call[0] == 'pipe-pane' for call in calls)
 
 
 def test_broker_no_nvidia_smi_keeps_gpu_queued_but_runs_cpu(
@@ -159,6 +162,20 @@ def test_refresh_running_marks_missing_session_failed(broker_args, fake_tmux):
     assert read_meta(path)['status'] == 'failed'
 
 
+def test_refresh_running_keeps_completed_status_after_session_exits(
+    broker_args, fake_tmux
+):
+    path = write_meta(
+        broker_args.state_dir,
+        1,
+        status='success',
+        exitcode=0,
+        session='missing',
+    )
+    refreshed = broker.refresh_running(broker_args, path, read_meta(path))
+    assert refreshed['status'] == 'success'
+
+
 def test_refresh_running_updates_pid(broker_args, fake_tmux):
     _, sessions = fake_tmux
     path = write_meta(broker_args.state_dir, 1, status='running', session='live')
@@ -167,6 +184,50 @@ def test_refresh_running_updates_pid(broker_args, fake_tmux):
     assert refreshed['pid'] == 1234
 
 
+def test_refresh_running_recovers_old_shell_session_with_finished_marker(
+    broker_args, fake_tmux
+):
+    calls, sessions = fake_tmux
+    path = write_meta(broker_args.state_dir, 1, status='running', session='live')
+    output = Path(read_meta(path)['output_file'])
+    output.write_text(
+        '[taskq] job 1 finished with exit code 0 at today\n',
+        encoding='utf-8',
+    )
+    sessions.add('live')
+    refreshed = broker.refresh_running(broker_args, path, read_meta(path))
+    assert refreshed['status'] == 'success'
+    assert refreshed['exitcode'] == 0
+    assert ('kill-session', '-t', 'live') in calls
+
+
+def test_start_job_does_not_overwrite_completed_metadata(
+    broker_args, fake_tmux, monkeypatch
+):
+    _, sessions = fake_tmux
+    path = write_meta(broker_args.state_dir, 1)
+    original_tmux = broker.tmux
+
+    def completing_tmux(args, *tmux_args, **kwargs):
+        result = original_tmux(args, *tmux_args, **kwargs)
+        if tmux_args[:2] == ('new-session', '-d'):
+            meta = read_meta(path)
+            meta.update({'status': 'success', 'exitcode': 0})
+            path.write_text(json.dumps(meta), encoding='utf-8')
+        return result
+
+    monkeypatch.setattr(broker, 'tmux', completing_tmux)
+    sessions.add('session-1')
+    broker.start_job(broker_args, path, read_meta(path))
+    meta = read_meta(path)
+    assert meta['status'] == 'success'
+    assert meta['exitcode'] == 0
+    assert meta['pid'] is None
+
+
 def test_tmux_cmd_socket_path(broker_args):
     broker_args.socket_path = '/tmp/taskq.sock'
-    assert broker.tmux_cmd(broker_args, 'ls') == ['tmux', '-S', '/tmp/taskq.sock', 'ls']
+    assert broker.tmux_cmd(broker_args, 'ls') == [
+        'tmux', '-f', broker_args.config_file,
+        '-S', '/tmp/taskq.sock', 'ls'
+    ]

@@ -35,6 +35,13 @@ def test_add_single_command_and_resources(fake_backend, rc_file, capsys):
     assert 'Added: 100' in out
 
 
+def test_add_preserves_shell_argument_quoting(fake_backend, rc_file, capsys):
+    run_cli(['add', 'sh', '-c', 'exit 1'], rc_file, capsys)
+    assert (
+        'add', "sh -c 'exit 1'", None, None, True
+    ) in fake_backend.instances[-1].calls
+
+
 def test_add_unique_skips_existing_command(fake_backend, rc_file, capsys):
     _, out = run_cli(['add', '-u', 'python', 'train.py'], rc_file, capsys)
     assert not [
@@ -79,6 +86,13 @@ def test_add_extrapolates_stdin_arguments(monkeypatch):
     monkeypatch.setattr(sys, 'stdin', io.StringIO('one,two\n'))
     commands = AddAction._extrapolate_inputs(['echo', '@1', '@2'], None, ',')
     assert commands == ['echo one two']
+
+
+def test_add_ignores_empty_non_tty_stdin(monkeypatch):
+    monkeypatch.setattr('taskq.actions.add.STDIN_TTY', False)
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(''))
+    commands = AddAction._extrapolate_inputs(['echo', 'hi'], None, ',')
+    assert commands == ['echo hi']
 
 
 def test_filter_parse_ids_and_statuses():

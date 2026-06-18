@@ -1,4 +1,5 @@
 import re
+import shlex
 import sys
 import string
 import random
@@ -60,7 +61,10 @@ class AddAction(DryActionBase):
     @staticmethod
     def _extrapolate_inputs(command, from_file, sep=','):
         if not STDIN_TTY:
-            inputs = sys.stdin.read().split('\n')
+            inputs = [
+                line for line in sys.stdin.read().split('\n')
+                if line.strip()
+            ]
         else:
             inputs = []
         if from_file == '-':
@@ -71,7 +75,7 @@ class AddAction(DryActionBase):
         else:
             commands = []
         if command:
-            commands += [' '.join(command)]
+            commands += [shlex.join(command)]
         if from_file == '-':
             # if we read from stdin for commands,
             # we can't read from stdin again for arguments

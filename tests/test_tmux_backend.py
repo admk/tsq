@@ -26,6 +26,7 @@ def tmux_backend(monkeypatch, tmp_path):
             'alloc': {'gpus': 0, 'slots': 1},
             'env': {},
             'state_dir': str(tmp_path),
+            'tmux_config': str(tmp_path / 'tmux.conf'),
             'history_limit': 50,
             'broker_interval': 0,
         },
@@ -59,8 +60,11 @@ def read_meta(backend, job_id):
 def test_tmux_registered_and_socket_commands(tmux_backend):
     assert BACKENDS['tmux'] is TmuxBackend
     assert tmux_backend._tmux_cmd('list-sessions') == [
-        'tmux', '-L', 'shared', 'list-sessions'
+        'tmux', '-f', str(tmux_backend.tmux_config_file),
+        '-L', 'shared', 'list-sessions'
     ]
+    tmux_backend._ensure_tmux_config()
+    assert 'remain-on-exit off' in tmux_backend.tmux_config_file.read_text()
     assert tmux_backend.backend_command(['list-sessions'], commit=False) is None
 
 
@@ -74,7 +78,10 @@ def test_tmux_socket_path_command(monkeypatch, tmp_path):
             'alloc': {}, 'env': {}, 'state_dir': str(tmp_path),
         },
     )
-    assert backend._tmux_cmd('ls')[:3] == ['tmux', '-S', str(tmp_path / 'sock')]
+    assert backend._tmux_cmd('ls') == [
+        'tmux', '-f', str(backend.tmux_config_file),
+        '-S', str(tmp_path / 'sock'), 'ls'
+    ]
 
 
 def test_tmux_add_queues_job_and_ensures_broker(tmux_backend):
@@ -84,8 +91,33 @@ def test_tmux_add_queues_job_and_ensures_broker(tmux_backend):
     assert meta['gpus_required'] == 1
     assert meta['slots_required'] == 2
     assert meta['gpu_ids'] == ''
-    assert 'CUDA_VISIBLE_DEVICES' in (tmux_backend._job_dir(int(job_id)) / 'run.sh').read_text()
+    wrapper = (tmux_backend._job_dir(int(job_id)) / 'run.sh').read_text()
+    assert 'CUDA_VISIBLE_DEVICES' in wrapper
+    assert 'exec "${SHELL:-/bin/sh}"' not in wrapper
+    assert 'exit "$exitcode"' in wrapper
+    assert f'tee -a {meta["output_file"]}' in wrapper
     assert tmux_backend.broker_session in tmux_backend.sessions
+
+
+def test_tmux_restarts_old_broker(tmux_backend):
+    tmux_backend.sessions.add(tmux_backend.broker_session)
+    tmux_backend.add('echo hi', gpus=0, slots=1)
+    killed = [call[0][2] for call in tmux_backend.calls
+              if call[0][:2] == ('kill-session', '-t')]
+    assert tmux_backend.broker_session in killed
+
+
+def test_tmux_keeps_current_broker(tmux_backend):
+    tmux_backend.sessions.add(tmux_backend.broker_session)
+
+    def fake_version():
+        return TmuxBackend.BROKER_VERSION
+
+    tmux_backend._broker_version = fake_version
+    tmux_backend.add('echo hi', gpus=0, slots=1)
+    killed = [call[0][2] for call in tmux_backend.calls
+              if call[0][:2] == ('kill-session', '-t')]
+    assert tmux_backend.broker_session not in killed
 
 
 def test_tmux_job_info_full_info_and_filters(tmux_backend):
@@ -148,5 +180,58 @@ def test_tmux_refresh_marks_missing_running_session_failed(tmux_backend):
     meta = read_meta(tmux_backend, job_id)
     meta['status'] = 'running'
     (tmux_backend._job_dir(job_id) / 'meta.json').write_text(json.dumps(meta))
+    info = tmux_backend.job_info(ids=[job_id], filters=FilterArgs())[0]
+    assert info['status'] == 'failed'
+
+
+def test_tmux_refresh_keeps_completed_status_after_session_exits(tmux_backend):
+    job_id = int(tmux_backend.add('echo hi', gpus=0, slots=1))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update({'status': 'success', 'exitcode': 0})
+    (tmux_backend._job_dir(job_id) / 'meta.json').write_text(json.dumps(meta))
+    info = tmux_backend.job_info(ids=[job_id], filters=FilterArgs())[0]
+    assert info['status'] == 'success'
+
+
+def test_tmux_refresh_cleans_up_stale_legacy_shell(tmux_backend):
+    job_id = int(tmux_backend.add('sleep 1', gpus=0, slots=1))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update({
+        'status': 'running',
+        'start_time': '2024-01-01T00:00:00',
+        'pid': 1234,
+    })
+    (tmux_backend._job_dir(job_id) / 'run.sh').write_text(
+        '#!/usr/bin/env bash\nsleep 1\nexit "$?"\n',
+        encoding='utf-8',
+    )
+    (tmux_backend._job_dir(job_id) / 'meta.json').write_text(json.dumps(meta))
+    tmux_backend.sessions.add(meta['session'])
+    tmux_backend._capture_pane = lambda session, tail: '❯\n'
+    tmux_backend._pane_current_command = lambda session: 'zsh'
+    info = tmux_backend.job_info(ids=[job_id], filters=FilterArgs())[0]
+    assert info['status'] == 'failed'
+    assert meta['session'] in [
+        call[0][2] for call in tmux_backend.calls
+        if call[0][:2] == ('kill-session', '-t')
+    ]
+
+
+def test_tmux_refresh_treats_xonsh_as_stale_legacy_shell(tmux_backend):
+    job_id = int(tmux_backend.add('sleep 1', gpus=0, slots=1))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update({
+        'status': 'running',
+        'start_time': '2024-01-01T00:00:00',
+        'pid': 1234,
+    })
+    (tmux_backend._job_dir(job_id) / 'run.sh').write_text(
+        '#!/usr/bin/env bash\nsleep 1\nexit "$?"\n',
+        encoding='utf-8',
+    )
+    (tmux_backend._job_dir(job_id) / 'meta.json').write_text(json.dumps(meta))
+    tmux_backend.sessions.add(meta['session'])
+    tmux_backend._capture_pane = lambda session, tail: '❯\n'
+    tmux_backend._pane_current_command = lambda session: 'python3.11'
     info = tmux_backend.job_info(ids=[job_id], filters=FilterArgs())[0]
     assert info['status'] == 'failed'

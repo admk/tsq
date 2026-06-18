@@ -15,6 +15,9 @@ def now():
 
 def tmux_cmd(args, *tmux_args):
     cmd = [args.command]
+    config_file = getattr(args, 'config_file', None)
+    if config_file:
+        cmd += ['-f', config_file]
     if args.socket_path:
         cmd += ['-S', args.socket_path]
     else:
@@ -137,10 +140,35 @@ def refresh_running(args, path, meta):
         return meta
     session = meta.get('session')
     if session and session_exists(args, session):
+        exitcode = finished_exitcode(meta)
+        if exitcode is not None:
+            meta.update({
+                'status': 'success' if exitcode == 0 else 'failed',
+                'exitcode': exitcode,
+                'end_time': meta.get('end_time') or now(),
+            })
+            write_meta(meta, path)
+            tmux(args, 'kill-session', '-t', session, check=False)
+            return meta
         pid = pane_pid(args, session)
         if pid and meta.get('pid') != pid:
             meta['pid'] = pid
             write_meta(meta, path)
+        return meta
+    try:
+        meta = read_meta(path)
+    except OSError:
+        return meta
+    if meta.get('status') != 'running':
+        return meta
+    exitcode = finished_exitcode(meta)
+    if exitcode is not None:
+        meta.update({
+            'status': 'success' if exitcode == 0 else 'failed',
+            'exitcode': exitcode,
+            'end_time': meta.get('end_time') or now(),
+        })
+        write_meta(meta, path)
         return meta
     meta.update({
         'status': 'failed',
@@ -148,6 +176,30 @@ def refresh_running(args, path, meta):
     })
     write_meta(meta, path)
     return meta
+
+
+def finished_exitcode(meta):
+    output_file = meta.get('output_file')
+    if not output_file:
+        return None
+    marker = f'[taskq] job {meta["id"]} finished with exit code '
+    try:
+        with open(output_file, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 65536))
+            data = f.read().decode('utf-8', errors='replace')
+    except OSError:
+        return None
+    for line in reversed(data.splitlines()):
+        if marker not in line:
+            continue
+        value = line.split(marker, 1)[1].split(maxsplit=1)[0]
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
 
 
 def start_job(args, path, meta, gpu_ids=None):
@@ -167,10 +219,18 @@ def start_job(args, path, meta, gpu_ids=None):
         'gpu_ids': ','.join(str(gpu_id) for gpu_id in gpu_ids or []),
     })
     write_meta(meta, path)
+    if gpu_ids:
+        taskq_gpu_ids = ','.join(str(gpu_id) for gpu_id in gpu_ids)
+    else:
+        taskq_gpu_ids = '-1'
+    run_command = (
+        f'TASKQ_GPU_IDS={shlex.quote(taskq_gpu_ids)} '
+        f'exec {shlex.quote(wrapper)}'
+    )
     tmux(
         args,
         'new-session', '-d', '-s', session, '-n', f'job-{job_id}',
-        '-c', meta.get('cwd') or os.getcwd(),
+        '-c', meta.get('cwd') or os.getcwd(), run_command,
     )
     tmux(
         args,
@@ -178,27 +238,16 @@ def start_job(args, path, meta, gpu_ids=None):
         str(args.history_limit),
         check=False,
     )
-    if output_file:
-        tmux(
-            args,
-            'pipe-pane', '-o', '-t', f'{session}:0.0',
-            f'cat >> {shlex.quote(output_file)}',
-            check=False,
-        )
-    if gpu_ids:
-        taskq_gpu_ids = ','.join(str(gpu_id) for gpu_id in gpu_ids)
-    else:
-        taskq_gpu_ids = '-1'
-    run_command = (
-        f'TASKQ_GPU_IDS={shlex.quote(taskq_gpu_ids)} '
-        f'{shlex.quote(wrapper)}'
-    )
-    tmux(args, 'send-keys', '-t', f'{session}:0.0', '-l', run_command)
-    tmux(args, 'send-keys', '-t', f'{session}:0.0', 'Enter')
+    try:
+        current = read_meta(path)
+    except OSError:
+        return
+    if current.get('status') != 'running':
+        return
     pid = pane_pid(args, session)
     if pid:
-        meta['pid'] = pid
-        write_meta(meta, path)
+        current['pid'] = pid
+        write_meta(current, path)
 
 
 def tick(args):
@@ -255,6 +304,7 @@ def main(argv=None):
     parser.add_argument('--state-dir', required=True)
     parser.add_argument('--prefix', required=True)
     parser.add_argument('--command', default='tmux')
+    parser.add_argument('--config-file', default=None)
     parser.add_argument('--socket', default='taskq')
     parser.add_argument('--socket-path', default=None)
     parser.add_argument('--slots', type=int, default=1)
