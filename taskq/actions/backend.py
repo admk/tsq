@@ -35,6 +35,7 @@ class BackendAction(ActionBase):
         for i in tqdm(info, desc='remove'):
             self.backend.remove(i)
         self.backend.backend_kill(args)
+        self.backend.backend_reset(args)
         print(f'Killed {self.backend.name} backend.')
 
     def command(self, args):

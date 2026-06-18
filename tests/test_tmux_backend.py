@@ -232,6 +232,18 @@ def test_tmux_kill_remove_and_backend_reset(tmux_backend):
     assert tmux_backend.broker_session in killed
 
 
+def test_tmux_backend_reset_resets_next_id(tmux_backend):
+    job_id = int(tmux_backend.add('echo first', gpus=0, slots=1))
+    assert job_id == 1
+    tmux_backend.remove({'id': job_id})
+
+    tmux_backend.backend_reset(None)
+
+    next_job_id = int(tmux_backend.add('echo second', gpus=0, slots=1))
+    assert next_job_id == 1
+    assert tmux_backend.counter_file.read_text(encoding='utf-8') == '2'
+
+
 def test_tmux_refresh_marks_missing_running_session_interrupted(tmux_backend):
     job_id = int(tmux_backend.add('echo hi', gpus=0, slots=1))
     meta = read_meta(tmux_backend, job_id)

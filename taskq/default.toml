@@ -13,7 +13,7 @@ slots = 1
 
 [backends.tmux]
 command = "tmux"
-state_dir = "~/.local/state/taskq"
+state_dir = "~/.cache/taskq"
 history_limit = 100000
 broker_interval = 1
 gpu_free_perc = 90

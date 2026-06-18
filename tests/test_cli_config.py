@@ -10,6 +10,7 @@ def test_default_config_exposes_tmux_and_ts():
     assert config['backend'] == 'tmux'
     assert 'tmux' in config['backends']
     assert 'ts' in config['backends']
+    assert config['backends']['tmux']['state_dir'] == '~/.cache/taskq'
 
 
 def test_resolve_config_merges_backend_and_group():

@@ -60,6 +60,9 @@ class BackendBase:
     def backend_kill(self, args):
         raise NotImplementedError
 
+    def backend_reset(self, args):
+        pass
+
     @abstractmethod
     def job_info(self, ids=None, filters=None):
         raise NotImplementedError

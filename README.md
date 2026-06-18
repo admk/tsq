@@ -116,7 +116,7 @@ OMP_NUM_THREADS = "1"
 
 [backends.tmux]
 command = "tmux"
-state_dir = "~/.local/state/taskq"
+state_dir = "~/.cache/taskq"
 history_limit = 100000
 broker_interval = 1
 gpu_free_perc = 90
@@ -143,7 +143,7 @@ Useful config keys:
 | `[alloc].gpus` | Default GPUs required per new job. |
 | `[alloc].slots` | Default slots required per new job. |
 | `[env]` | Environment variables exported into jobs. |
-| `[backends.tmux].state_dir` | Metadata, wrappers, logs, and generated tmux config directory. |
+| `[backends.tmux].state_dir` | Cache directory for metadata, wrappers, logs, and generated tmux config. |
 | `[backends.tmux].socket_path` | Optional explicit tmux socket path. |
 | `[backends.tmux].gpu_free_perc` | GPU memory-free threshold used by the tmux broker when allocating GPUs. |
 | `[groups.<name>]` | Per-group overrides. Use `tq -g <name> ...` to select a group. |

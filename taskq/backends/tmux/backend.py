@@ -24,7 +24,7 @@ class TmuxBackend(BackendBase):
         self.socket = self.config.get('socket', 'taskq')
         self.socket_path = self.config.get('socket_path')
         group = self.config.get('group', 'default')
-        state_dir = self.config.get('state_dir', '~/.local/state/taskq')
+        state_dir = self.config.get('state_dir', '~/.cache/taskq')
         state_name = self.socket_path or self.socket
         self.state_dir = (
             Path(os.path.expanduser(state_dir))
@@ -542,6 +542,13 @@ class TmuxBackend(BackendBase):
         for session in sessions.splitlines():
             if session.startswith(f'{self.prefix}-'):
                 self._tmux('kill-session', '-t', session, check=False)
+
+    def backend_reset(self, args):
+        self._ensure_state()
+        lock_file = self.state_dir / 'next_id.lock'
+        with open(lock_file, 'w', encoding='utf-8') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.counter_file.write_text('1', encoding='utf-8')
 
     def job_info(self, ids=None, filters=None):
         info = [self._to_job_info(meta) for meta in self._all_meta()]
