@@ -40,5 +40,8 @@ test = [
 [tool.setuptools.packages.find]
 include = ["taskq", "taskq.*"]
 
+[tool.setuptools.package-data]
+"taskq.backends.tmux" = ["wrapper.sh"]
+
 [tool.setuptools.dynamic]
 version = {attr = "taskq.__version__"}

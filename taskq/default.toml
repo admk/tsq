@@ -1,22 +1,102 @@
-group = "default"
-slots = "auto"
+# taskq reads configuration in this order:
+# 1. Built-in defaults from this file.
+# 2. ~/.config/tq.toml.
+# 3. ./.tq.toml.
+# Later files override earlier settings. Passing -rc FILE reads only FILE.
+
+# Default backend. Supported values are:
+# - "tmux": taskq-managed tmux sessions and broker.
+# - "ts": Task Spooler.
+# - "dummy": no-op backend used mainly for tests.
 backend = "tmux"
+
+# Default queue group. Select another group with `tq -g NAME ...`.
+# Groups isolate queue state and may override most resolved settings.
+group = "default"
+
+# Total queue capacity. Use an integer, or "auto" to use the number of GPUs
+# reported by nvidia-smi. If nvidia-smi is unavailable, "auto" resolves to 1.
+slots = "auto"
+
+# Shared backend socket name. For tmux this is passed as `tmux -L socket`;
+# for Task Spooler this becomes /tmp/ts-{socket}.sock unless TS_SOCKET is set
+# in [env]. The tmux backend ignores this when socket_path is configured.
 socket = "taskq"
 
+# Default resource request for newly added jobs. CLI flags override these:
+# `tq add -G GPUS -N SLOTS ...`.
 [alloc]
+
+# GPUs required per job. Set to 0 for CPU-only jobs by default.
 gpus = 1
+
+# Queue slots required per job.
 slots = 1
 
+# Environment variables added to backend commands and jobs. Keys must be valid
+# shell variable names to be exported into tmux job wrappers. For tmux jobs, the
+# enqueue-time shell environment is also captured and wins over duplicate keys.
 [env]
+# OMP_NUM_THREADS = "1"
+# CUDA_DEVICE_ORDER = "PCI_BUS_ID"
 
+# Per-group overrides. A group table is merged after the selected backend table.
+# Useful group keys include slots, socket, visible_gpus, alloc, env, state_dir,
+# history_limit, broker_interval, gpu_free_perc, tmux_config, and socket_path.
+#
+# Note: backend and group selection happens before group overrides are merged,
+# so a group table should not be used to choose the active backend or group.
 [groups.default]
+# The default group intentionally has no overrides.
+#
+# Example:
+# [groups.gpu]
+# slots = 4
+# visible_gpus = "0,1"
+#
+# [groups.gpu.alloc]
+# gpus = 1
+# slots = 1
 
+# Backend-specific defaults. The table matching `backend` is merged into the
+# top-level configuration before the active group table is merged.
 [backends.tmux]
+
+# tmux executable name or absolute path.
 command = "tmux"
+
+# Root directory for task metadata, wrappers, logs, generated tmux config, and
+# broker runtime files. The actual queue state lives below:
+# {state_dir}/{sanitized socket or socket_path}/{group}/
 state_dir = "~/.cache/taskq"
+
+# tmux scrollback history limit for generated taskq tmux config and job panes.
 history_limit = 100000
+
+# Broker polling interval in seconds. May be an integer or float.
 broker_interval = 1
+
+# A GPU is considered free when memory.free is greater than this percentage of
+# memory.total according to nvidia-smi.
 gpu_free_perc = 90
 
+# Optional explicit GPU allowlist for the tmux broker. If unset, taskq uses
+# TS_VISIBLE_DEVICES from [env] or the process environment when present.
+# visible_gpus = "0,1"
+
+# Optional explicit tmux socket path. When set, taskq passes `tmux -S PATH`
+# instead of `tmux -L socket`.
+# socket_path = "~/.cache/taskq/tmux.sock"
+
+# Optional generated tmux config path. By default, taskq writes tmux.conf inside
+# the resolved queue state directory. `config_file` is accepted as an older
+# alias, but tmux_config takes precedence when both are set.
+# tmux_config = "~/.cache/taskq/tmux.conf"
+# config_file = "~/.cache/taskq/tmux.conf"
+
 [backends.ts]
+
+# Task Spooler executable name or absolute path. The ts backend also uses the
+# common slots, socket, alloc, and env settings. It sets TS_SLOTS from slots and
+# TS_SOCKET from socket unless those variables are already present in [env].
 command = "ts"

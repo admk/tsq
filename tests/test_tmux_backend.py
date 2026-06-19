@@ -106,6 +106,8 @@ def test_tmux_add_queues_job_and_ensures_broker(tmux_backend):
     assert 'bash -lc' not in wrapper
     assert 'exit "$exitcode"' in wrapper
     assert 'exec > >(tee' not in wrapper
+    assert 'complete_job.py' not in wrapper
+    assert "<<'PY'" not in wrapper
     assert '>> "$output_file"' in wrapper
     assert 'while [ "$i" -lt 100 ]; do' in wrapper
     assert meta['start_file'].endswith('/start')
@@ -264,50 +266,6 @@ def test_tmux_refresh_keeps_completed_status_after_session_exits(tmux_backend):
     (tmux_backend._job_dir(job_id) / 'meta.json').write_text(json.dumps(meta))
     info = tmux_backend.job_info(ids=[job_id], filters=FilterArgs())[0]
     assert info['status'] == 'success'
-
-
-def test_tmux_refresh_cleans_up_stale_legacy_shell(tmux_backend):
-    job_id = int(tmux_backend.add('sleep 1', gpus=0, slots=1))
-    meta = read_meta(tmux_backend, job_id)
-    meta.update({
-        'status': 'running',
-        'start_time': '2024-01-01T00:00:00',
-        'pid': 1234,
-    })
-    (tmux_backend._job_dir(job_id) / 'run.sh').write_text(
-        '#!/usr/bin/env bash\nsleep 1\nexport TASKQ_EXIT_CODE="$?"\nexec "${SHELL:-/bin/sh}"\n',
-        encoding='utf-8',
-    )
-    (tmux_backend._job_dir(job_id) / 'meta.json').write_text(json.dumps(meta))
-    tmux_backend.sessions.add(meta['session'])
-    tmux_backend._capture_pane = lambda session, tail: '❯\n'
-    tmux_backend._pane_current_command = lambda session: 'zsh'
-    info = tmux_backend.job_info(ids=[job_id], filters=FilterArgs())[0]
-    assert info['status'] == 'failed'
-    assert meta['session'] in [
-        call[0][2] for call in tmux_backend.calls
-        if call[0][:2] == ('kill-session', '-t')
-    ]
-
-
-def test_tmux_refresh_treats_xonsh_as_stale_legacy_shell(tmux_backend):
-    job_id = int(tmux_backend.add('sleep 1', gpus=0, slots=1))
-    meta = read_meta(tmux_backend, job_id)
-    meta.update({
-        'status': 'running',
-        'start_time': '2024-01-01T00:00:00',
-        'pid': 1234,
-    })
-    (tmux_backend._job_dir(job_id) / 'run.sh').write_text(
-        '#!/usr/bin/env bash\nsleep 1\nexport TASKQ_EXIT_CODE="$?"\nexec "${SHELL:-/bin/sh}"\n',
-        encoding='utf-8',
-    )
-    (tmux_backend._job_dir(job_id) / 'meta.json').write_text(json.dumps(meta))
-    tmux_backend.sessions.add(meta['session'])
-    tmux_backend._capture_pane = lambda session, tail: '❯\n'
-    tmux_backend._pane_current_command = lambda session: 'python3.11'
-    info = tmux_backend.job_info(ids=[job_id], filters=FilterArgs())[0]
-    assert info['status'] == 'failed'
 
 
 def test_tmux_refresh_keeps_new_gated_wrapper_running(tmux_backend):

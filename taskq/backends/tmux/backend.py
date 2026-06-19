@@ -14,6 +14,19 @@ from ...common import STATUSES, dict_simplify, file_tail_lines
 from ..base import BackendBase, register_backend
 
 
+def render_wrapper(job_id, argv, session, output_file, start_file, env_exports):
+    template = Path(__file__).with_name('wrapper.sh').read_text(encoding='utf-8')
+    return template.format(
+        argv=shlex.join(argv),
+        output_dir=shlex.quote(str(output_file.parent)),
+        output_file=shlex.quote(str(output_file)),
+        start_file=shlex.quote(str(start_file)),
+        env_exports=env_exports,
+        job_id=job_id,
+        session=shlex.quote(session),
+    )
+
+
 @register_backend('tmux')
 class TmuxBackend(BackendBase):
     BROKER_VERSION = '7'
@@ -325,14 +338,6 @@ class TmuxBackend(BackendBase):
                 self._write_meta(meta)
                 self._tmux('kill-session', '-t', session, check=False)
                 return meta
-            if self._is_stale_legacy_shell(meta, pane_text, session):
-                meta.update({
-                    'status': 'failed',
-                    'end_time': meta.get('end_time') or self._now(),
-                })
-                self._write_meta(meta)
-                self._tmux('kill-session', '-t', session, check=False)
-                return meta
             pid = self._pane_pid(session)
             if pid:
                 meta['pid'] = pid
@@ -387,65 +392,6 @@ class TmuxBackend(BackendBase):
                 except ValueError:
                     return None
         return None
-
-    def _is_stale_legacy_shell(self, meta, pane_text, session):
-        if not self._is_legacy_wrapper(meta):
-            return False
-        if not self._has_started_long_enough(meta):
-            return False
-        if self._command_starts_shell(meta.get('command', '')):
-            return False
-        current_command = os.path.basename(
-            self._pane_current_command(session).strip())
-        if current_command in {'sh', 'bash', 'zsh', 'fish', 'xonsh'}:
-            return f'[taskq] job {meta["id"]} finished with exit code ' not in pane_text
-        if (
-            current_command.startswith('python')
-            and self._pane_looks_idle_shell(pane_text)
-        ):
-            return True
-        return False
-
-    @staticmethod
-    def _pane_looks_idle_shell(pane_text):
-        lines = [line.strip() for line in pane_text.splitlines() if line.strip()]
-        if not lines:
-            return False
-        tail = '\n'.join(lines[-4:])
-        return (
-            '\u276f' in tail
-            or '>>>' in tail
-            or re.search(r'(^|\n)[/~][^\n]*[$#>]?\s*$', tail) is not None
-        )
-
-    @staticmethod
-    def _is_legacy_wrapper(meta):
-        wrapper = meta.get('wrapper')
-        if not wrapper:
-            return True
-        try:
-            text = Path(wrapper).read_text(encoding='utf-8')
-        except OSError:
-            return True
-        return 'start_file=' not in text and 'TASKQ_EXIT_CODE' in text
-
-    def _has_started_long_enough(self, meta):
-        start_time = self._parse_time(meta.get('start_time'))
-        if not start_time:
-            return False
-        return (
-            datetime.datetime.now() - start_time
-        ).total_seconds() >= float(self.config.get('legacy_shell_grace', 2))
-
-    @staticmethod
-    def _command_starts_shell(command):
-        try:
-            parts = shlex.split(command)
-        except ValueError:
-            return False
-        if not parts:
-            return False
-        return os.path.basename(parts[0]) in {'sh', 'bash', 'zsh', 'fish', 'xonsh'}
 
     def _to_job_info(self, meta):
         meta = self._refresh_meta(meta)
@@ -627,57 +573,14 @@ class TmuxBackend(BackendBase):
         job_env = self._capture_job_env(os.environ, self.env)
         env_exports = self._encode_env(job_env)
         wrapper.write_text(
-            '\n'.join([
-                '#!/bin/sh',
-                'set +e',
-                f'set -- {shlex.join(argv)}',
-                f'mkdir -p {shlex.quote(str(output_file.parent))}',
-                f'touch {shlex.quote(str(output_file))}',
-                f'start_file={shlex.quote(str(start_file))}',
-                'i=0',
-                'while [ "$i" -lt 100 ]; do',
-                '    [ -e "$start_file" ] && break',
-                '    sleep 0.05',
-                '    i=$((i + 1))',
-                'done',
-                'rm -f "$start_file"',
-                env_exports,
-                'if [ "${TASKQ_GPU_IDS+x}" ]; then',
-                '    export CUDA_VISIBLE_DEVICES="$TASKQ_GPU_IDS"',
-                'fi',
-                f'export TASKQ_JOB_ID={job_id}',
-                f'export TASKQ_SESSION={shlex.quote(session)}',
-                f'output_file={shlex.quote(str(output_file))}',
-                f'printf "[taskq] job {job_id} started at %s\\n" "$(date)"',
-                'if [ "$#" -eq 0 ]; then',
-                '    exitcode=127',
-                'else',
-                '    "$@"',
-                '    exitcode=$?',
-                'fi',
-                f'{shlex.quote(sys.executable)} - '
-                f'{shlex.quote(str(self._meta_file(job_id)))} '
-                '"$exitcode" <<\'PY\'',
-                'import datetime',
-                'import json',
-                'import os',
-                'import sys',
-                'path, code = sys.argv[1], int(sys.argv[2])',
-                'with open(path, "r", encoding="utf-8") as f:',
-                '    meta = json.load(f)',
-                'meta["exitcode"] = code',
-                'meta["status"] = "success" if code == 0 else "failed"',
-                'meta["end_time"] = datetime.datetime.now().isoformat()',
-                'tmp = path + ".tmp"',
-                'with open(tmp, "w", encoding="utf-8") as f:',
-                '    json.dump(meta, f, indent=2, sort_keys=True)',
-                '    f.write("\\n")',
-                'os.replace(tmp, path)',
-                'PY',
-                f'printf "[taskq] job {job_id} finished with exit code %s at %s\\n" "$exitcode" "$(date)" >> "$output_file"',
-                'exit "$exitcode"',
-                '',
-            ]),
+            render_wrapper(
+                job_id=job_id,
+                argv=argv,
+                session=session,
+                output_file=output_file,
+                start_file=start_file,
+                env_exports=env_exports,
+            ),
             encoding='utf-8',
         )
         wrapper.chmod(0o700)
