@@ -1,7 +1,12 @@
+import sys
 from abc import abstractmethod
 from typing import Mapping, Type
 
 from ..backends import BACKENDS, BackendNotFoundError
+
+
+class CLIError(Exception):
+    pass
 
 
 class ActionBase:
@@ -19,7 +24,11 @@ class ActionBase:
         raise NotImplementedError
 
     def __call__(self, args, config):
-        args = self.transform_args(args)
+        try:
+            args = self.transform_args(args)
+        except CLIError as e:
+            print(f'tq: error: {e}', file=sys.stderr)
+            return 2
         backend = config['backend']
         try:
             backend_cls = BACKENDS[backend]

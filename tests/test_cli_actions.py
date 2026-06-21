@@ -116,6 +116,15 @@ def test_filter_parse_ids_and_statuses():
     assert not action.filters.all
 
 
+def test_invalid_default_id_prints_cli_error(fake_backend, rc_file, capsys):
+    code = CLI().main(['-rc', str(rc_file), 'hello'])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "tq: error: invalid job ID 'hello'" in captured.err
+    assert 'Traceback' not in captured.err
+
+
 def test_list_info_ids_commands_outputs_export(fake_backend, rc_file, capsys):
     _, out = run_cli(['list', '-c', 'id,status,slots,gpus,gpu_ids,command,output'], rc_file, capsys)
     assert 'python train.py' in out

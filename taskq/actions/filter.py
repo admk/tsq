@@ -1,7 +1,38 @@
 import sys
 
 from ..common import STATUSES, FilterArgs
-from .base import ActionBase
+from .base import ActionBase, CLIError
+
+
+def parse_id_selector(value):
+    ids = []
+    for item in value.split(','):
+        item = item.strip()
+        if not item:
+            raise CLIError(
+                f'invalid job ID selector {value!r}; expected IDs or ranges '
+                'like "1-3,5"')
+        if '-' in item:
+            parts = item.split('-')
+            if len(parts) != 2:
+                raise CLIError(
+                    f'invalid job ID range {item!r}; expected "start-end"')
+            start, end = parts
+            if not start.isdigit() or not end.isdigit():
+                raise CLIError(
+                    f'invalid job ID range {item!r}; expected numeric IDs')
+            start_id = int(start)
+            end_id = int(end)
+            if start_id > end_id:
+                raise CLIError(
+                    f'invalid job ID range {item!r}; start is greater than end')
+            ids += list(range(start_id, end_id + 1))
+        else:
+            if not item.isdigit():
+                raise CLIError(
+                    f'invalid job ID {item!r}; expected a numeric ID')
+            ids.append(int(item))
+    return ids
 
 
 class FilterActionBase(ActionBase):
@@ -53,18 +84,10 @@ class FilterActionBase(ActionBase):
     def _parse_ids(self, args):
         if args.id == '-':
             args.id = sys.stdin.read().strip()
-            return
         if not args.id:
             self.ids = None
             return
-        ids = []
-        for i in args.id.split(','):
-            if '-' in i:
-                start, end = i.split('-')
-                ids += list(range(int(start), int(end) + 1))
-            else:
-                ids.append(int(i))
-        self.ids = ids
+        self.ids = parse_id_selector(args.id)
 
     def _parse_filters(self, args):
         self.filters = FilterArgs(
