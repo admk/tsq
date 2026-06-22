@@ -231,6 +231,17 @@ class TmuxBackend(BackendBase):
         subprocess.run(cmd, env=env, check=check)
         return ''
 
+    def _attach_tmux(self, session):
+        self._ensure_tmux_config()
+        env = dict(os.environ, **self.env)
+        env.pop('TMUX', None)
+        subprocess.run(
+            self._tmux_cmd('attach-session', '-t', session),
+            env=env,
+            check=False,
+        )
+        return ''
+
     def _session_exists(self, session):
         self._ensure_tmux_config()
         result = subprocess.run(
@@ -545,14 +556,7 @@ class TmuxBackend(BackendBase):
                 print(f'Job {info["id"]} is queued; waiting for a slot...')
                 session = self._wait_for_session(info['id'])
             if session and self._session_exists(session):
-                command = (
-                    'switch-client'
-                    if os.environ.get('TMUX')
-                    else 'attach-session'
-                )
-                return self._tmux(
-                    command, '-t', session,
-                    capture_output=False, check=False)
+                return self._attach_tmux(session)
             out = self._tail_file(meta.get('output_file'), tail)
             if out:
                 print(out)

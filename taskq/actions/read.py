@@ -3,13 +3,14 @@ import time
 import platform
 import textwrap
 import functools
+from pathlib import Path
 from datetime import datetime
 from abc import abstractmethod
 
 import tabulate
 from blessed import Terminal
 
-from ..common import tqdm, FilterArgs
+from ..common import tqdm, FilterArgs, file_tail_lines
 from ..utils import timedelta_format
 from .base import register_action
 from .filter import FilterActionBase
@@ -308,21 +309,56 @@ class OutputsAction(ReadActionBase):
             outputs.append(out)
         return '\n'.join(outputs).rstrip()
 
+    @staticmethod
+    def _print_follow_chunk(text):
+        if not text:
+            return
+        print(text, end='' if text.endswith('\n') else '\n')
+        sys.stdout.flush()
+
+    def _follow_file(self, info, tail, interval):
+        path = info.get('output_file')
+        if not path:
+            print('No output file found.')
+            return 1
+        output_file = Path(path)
+        if tail and output_file.exists():
+            self._print_follow_chunk(file_tail_lines(str(output_file), tail))
+        elif output_file.exists():
+            self._print_follow_chunk(output_file.read_text(
+                encoding='utf-8', errors='replace'))
+        position = output_file.stat().st_size if output_file.exists() else 0
+        try:
+            while True:
+                if output_file.exists():
+                    size = output_file.stat().st_size
+                    if size < position:
+                        position = 0
+                    if size > position:
+                        with open(output_file, 'r', encoding='utf-8',
+                                  errors='replace') as f:
+                            f.seek(position)
+                            self._print_follow_chunk(f.read())
+                            position = f.tell()
+                current = self.backend.job_info([info['id']], FilterArgs())
+                if not current or current[0]['status'] not in ['queued', 'running']:
+                    return 0
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            return 0
+
     def main(self, args):
-        if not args.interactive:
+        if not args.follow:
             return super().main(args)
-        info = self.backend.job_info(self.ids, self.filters)
+        info = self.backend.full_info(self.ids, self.filters)
         if not info:
             print('No jobs found.')
             return 1
         if len(info) > 1:
             print('Cannot follow multiple outputs.')
             return 1
-        try:
-            self.backend.output(info[0], args.tail, shell=True)
-        except KeyboardInterrupt:
-            pass
-        return 0
+        interval = args.interval if args.interval is not None else 0.2
+        return self._follow_file(info[0], args.tail, interval)
 
 
 @register_action('interact', 'attach to a running job', aliases=['i'])

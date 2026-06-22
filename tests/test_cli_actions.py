@@ -161,13 +161,21 @@ def test_list_info_ids_commands_outputs_export(fake_backend, rc_file, capsys):
     assert 'python train.py' in out
 
 
-def test_outputs_interactive_requires_single_job(fake_backend, rc_file, capsys):
-    result, out = run_cli(['outputs', '-I'], rc_file, capsys)
+def test_outputs_follow_requires_single_job(
+    fake_backend, rc_file, tmp_path, capsys
+):
+    result, out = run_cli(['outputs', '-F'], rc_file, capsys)
     assert result == 1
     assert 'Cannot follow multiple outputs.' in out
 
-    run_cli(['outputs', '-I', '1'], rc_file, capsys)
-    assert ('output', 1, 0, True) in fake_backend.instances[-1].calls
+    output_file = tmp_path / 'out-1.log'
+    output_file.write_text('line1\nline2\n', encoding='utf-8')
+    fake_backend.jobs[0]['status'] = 'success'
+    fake_backend.jobs[0]['output_file'] = str(output_file)
+
+    _, out = run_cli(['outputs', '-F', '1'], rc_file, capsys)
+    assert out == 'line1\nline2\n'
+    assert ('output', 1, 0, True) not in fake_backend.instances[-1].calls
 
 
 def test_outputs_interrupted_filter_uses_lowercase_i(fake_backend, rc_file, capsys):

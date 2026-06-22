@@ -50,6 +50,10 @@ def tmux_backend(monkeypatch, tmp_path):
 
     monkeypatch.setattr(backend, '_tmux', fake_tmux)
     monkeypatch.setattr(backend, '_session_exists', lambda session: session in sessions)
+    backend.attached = []
+    monkeypatch.setattr(
+        backend, '_attach_tmux', lambda session: backend.attached.append(session)
+    )
     backend.calls = calls
     backend.sessions = sessions
     return backend
@@ -204,7 +208,6 @@ def test_tmux_job_info_full_info_and_filters(tmux_backend):
 
 
 def test_tmux_output_waits_and_attaches(monkeypatch, tmux_backend, capsys):
-    monkeypatch.delenv('TMUX', raising=False)
     job_id = int(tmux_backend.add('sleep 1', gpus=0, slots=1))
     meta = read_meta(tmux_backend, job_id)
     tmux_backend.sessions.discard(meta['session'])
@@ -217,17 +220,18 @@ def test_tmux_output_waits_and_attaches(monkeypatch, tmux_backend, capsys):
     monkeypatch.setattr('taskq.backends.tmux.backend.time.sleep', fake_sleep)
     tmux_backend.output({'id': job_id}, 0, shell=True)
     assert waits['count'] == 1
-    assert any(call[0][0] == 'attach-session' for call in tmux_backend.calls)
+    assert tmux_backend.attached == [meta['session']]
     assert 'waiting for a slot' in capsys.readouterr().out
 
 
 def test_tmux_interact_attaches(monkeypatch, tmux_backend):
-    monkeypatch.delenv('TMUX', raising=False)
+    monkeypatch.setenv('TMUX', '/tmp/outer-tmux,1,0')
     job_id = int(tmux_backend.add('sleep 1', gpus=0, slots=1))
     meta = read_meta(tmux_backend, job_id)
     tmux_backend.sessions.add(meta['session'])
     tmux_backend.interact({'id': job_id})
-    assert any(call[0][0] == 'attach-session' for call in tmux_backend.calls)
+    assert tmux_backend.attached == [meta['session']]
+    assert not any(call[0][0] == 'switch-client' for call in tmux_backend.calls)
 
 
 def test_tmux_output_capture_and_file_fallback(tmux_backend):
