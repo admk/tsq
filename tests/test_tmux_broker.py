@@ -173,14 +173,17 @@ def test_broker_releases_job_after_pipe_pane(broker_args, fake_tmux, monkeypatch
     assert new_index < pipe_index
 
 
-def test_broker_no_nvidia_smi_keeps_gpu_queued_but_runs_cpu(
+def test_broker_no_nvidia_smi_fails_gpu_job_but_runs_cpu(
     broker_args, fake_tmux, monkeypatch
 ):
     gpu_path = write_meta(broker_args.state_dir, 1, gpus_required=1)
     cpu_path = write_meta(broker_args.state_dir, 2, gpus_required=0)
     monkeypatch.setattr(broker, 'query_free_gpus', lambda args: None)
     broker.tick(broker_args)
-    assert read_meta(gpu_path)['status'] == 'queued'
+    gpu_meta = read_meta(gpu_path)
+    assert gpu_meta['status'] == 'failed'
+    assert 'nvidia-smi is not available' in Path(
+        gpu_meta['output_file']).read_text(encoding='utf-8')
     assert read_meta(cpu_path)['status'] == 'running'
 
 
@@ -200,6 +203,14 @@ def test_query_free_gpus_missing_nvidia_smi(monkeypatch, broker_args):
         raise FileNotFoundError
 
     monkeypatch.setattr(subprocess, 'run', raise_missing)
+    assert broker.query_free_gpus(broker_args) is None
+
+
+def test_query_free_gpus_no_reported_devices(monkeypatch, broker_args):
+    class Result:
+        stdout = ''
+
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k: Result())
     assert broker.query_free_gpus(broker_args) is None
 
 

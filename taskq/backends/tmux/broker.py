@@ -82,6 +82,7 @@ def query_free_gpus(args):
         return None
     visible = set(visible_gpu_ids(args))
     free = []
+    seen = 0
     for line in result.stdout.splitlines():
         parts = [part.strip() for part in line.split(',')]
         if len(parts) != 3:
@@ -92,10 +93,13 @@ def query_free_gpus(args):
             memory_total = float(parts[2])
         except ValueError:
             continue
+        seen += 1
         if visible and gpu_id not in visible:
             continue
         if memory_total and memory_free > args.gpu_free_perc / 100 * memory_total:
             free.append(gpu_id)
+    if seen == 0:
+        return None
     if not visible:
         return free
     return [gpu_id for gpu_id in visible_gpu_ids(args) if gpu_id in free]
@@ -309,6 +313,27 @@ def mark_start_failed(meta, path, error):
     write_meta(meta, path)
 
 
+def mark_gpu_unavailable(meta, path):
+    output_file = meta.get('output_file')
+    gpus_required = int(meta.get('gpus_required') or 0)
+    message = (
+        '[taskq] GPU allocation requested '
+        f'({gpus_required}), but nvidia-smi is not available '
+        'or reported no NVIDIA GPUs. '
+        'Install NVIDIA GPU tooling or submit the job with -G 0.'
+    )
+    if output_file:
+        Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+        with open(output_file, 'a', encoding='utf-8') as f:
+            f.write(message + '\n')
+    meta.update({
+        'status': 'failed',
+        'exitcode': None,
+        'end_time': now(),
+    })
+    write_meta(meta, path)
+
+
 def tick(args):
     metas = []
     for path, meta in all_meta(args):
@@ -345,6 +370,7 @@ def tick(args):
         gpu_ids = []
         if gpus_required:
             if free_gpu_ids is None:
+                mark_gpu_unavailable(meta, path)
                 continue
             available = [
                 gpu_id

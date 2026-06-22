@@ -144,7 +144,7 @@ class TaskSpoolerBackend(BackendBase):
     def add(self, command, gpus=None, slots=None):
         torun = []
         alloc_config = self.config.get('alloc', {})
-        gpus = gpus if gpus is not None else alloc_config.get('gpus', 1)
+        gpus = gpus if gpus is not None else alloc_config.get('gpus', 0)
         slots = slots if slots is not None else alloc_config.get('slots', 1)
         if gpus > 0:
             torun += ['-G', gpus]

@@ -8,8 +8,30 @@ def test_default_config_exposes_tmux_and_ts():
     config = tomlkit.loads(
         Path('taskq/default.toml').read_text(encoding='utf-8'))
     assert config['backend'] == 'tmux'
+    assert config['alloc']['gpus'] == 0
     assert 'tmux' in config['backends']
     assert 'ts' in config['backends']
+    assert config['backends']['tmux']['state_dir'] == '~/.cache/taskq'
+
+
+def test_load_config_uses_packaged_defaults_without_local_rc(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    args = type('Args', (), {'rc_file': None})()
+
+    config = CLI()._load_config(args)
+
+    assert config['alloc']['gpus'] == 0
+
+
+def test_explicit_rc_merges_packaged_defaults(tmp_path):
+    rc = tmp_path / 'tq.toml'
+    rc.write_text('group = "custom"\n', encoding='utf-8')
+    args = type('Args', (), {'rc_file': str(rc)})()
+
+    config = CLI()._load_config(args)
+
+    assert config['group'] == 'custom'
+    assert config['alloc']['gpus'] == 0
     assert config['backends']['tmux']['state_dir'] == '~/.cache/taskq'
 
 

@@ -90,6 +90,7 @@ def test_tmux_socket_path_command(monkeypatch, tmp_path):
 
 
 def test_tmux_add_queues_job_and_ensures_broker(tmux_backend):
+    tmux_backend._nvidia_gpus_available = lambda: True
     job_id = tmux_backend.add('echo hi', gpus=1, slots=2)
     meta = read_meta(tmux_backend, int(job_id))
     assert meta['status'] == 'queued'
@@ -127,6 +128,30 @@ def test_tmux_add_captures_enqueue_environment(monkeypatch, tmux_backend):
     assert 'export CONFIG_WINS=from-shell' in wrapper
     assert 'export CONFIG_WINS=from-config' not in wrapper
     assert 'export API_TOKEN=secret' in wrapper
+
+
+def test_tmux_add_gpu_job_fails_immediately_without_nvidia(tmux_backend, capsys):
+    tmux_backend._nvidia_gpus_available = lambda: False
+
+    job_id = tmux_backend.add('echo gpu', gpus=1, slots=1)
+
+    meta = read_meta(tmux_backend, int(job_id))
+    assert meta['status'] == 'failed'
+    assert 'nvidia-smi is not available' in (
+        tmux_backend._job_dir(int(job_id)) / 'output.log'
+    ).read_text(encoding='utf-8')
+    assert 'nvidia-smi is not available' in capsys.readouterr().err
+
+
+def test_tmux_add_cpu_job_does_not_check_nvidia(tmux_backend):
+    def fail_if_called():
+        raise AssertionError('unexpected GPU availability check')
+
+    tmux_backend._nvidia_gpus_available = fail_if_called
+
+    job_id = tmux_backend.add('echo cpu', gpus=0, slots=1)
+
+    assert read_meta(tmux_backend, int(job_id))['status'] == 'queued'
 
 
 def test_tmux_restarts_old_broker(tmux_backend):

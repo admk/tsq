@@ -148,7 +148,7 @@ class AddAction(DryActionBase):
     @staticmethod
     def _resolved_alloc(config, args):
         alloc_config = config.get('alloc', {})
-        gpus = args.gpus if args.gpus is not None else alloc_config.get('gpus', 1)
+        gpus = args.gpus if args.gpus is not None else alloc_config.get('gpus', 0)
         slots = (
             args.slots if args.slots is not None
             else alloc_config.get('slots', 1)

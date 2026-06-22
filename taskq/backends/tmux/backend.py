@@ -65,6 +65,32 @@ class TmuxBackend(BackendBase):
         return datetime.datetime.now().isoformat()
 
     @staticmethod
+    def _gpu_unavailable_message(gpus_required):
+        return (
+            '[taskq] GPU allocation requested '
+            f'({gpus_required}), but nvidia-smi is not available '
+            'or reported no NVIDIA GPUs. '
+            'Install NVIDIA GPU tooling or submit the job with -G 0.'
+        )
+
+    @staticmethod
+    def _nvidia_gpus_available():
+        try:
+            result = subprocess.run(
+                [
+                    'nvidia-smi',
+                    '--query-gpu=index',
+                    '--format=csv,noheader,nounits',
+                ],
+                capture_output=True,
+                check=True,
+                text=True,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            return False
+        return any(line.strip() for line in result.stdout.splitlines())
+
+    @staticmethod
     def _parse_time(value):
         if not value:
             return None
@@ -540,7 +566,7 @@ class TmuxBackend(BackendBase):
 
     def add(self, command, gpus=None, slots=None):
         alloc_config = self.config.get('alloc', {})
-        gpus = gpus if gpus is not None else alloc_config.get('gpus', 1)
+        gpus = gpus if gpus is not None else alloc_config.get('gpus', 0)
         slots = slots if slots is not None else alloc_config.get('slots', 1)
         job_id = self._next_id()
         session = self._session_name(job_id)
@@ -570,6 +596,18 @@ class TmuxBackend(BackendBase):
             'cwd': cwd,
         }
         self._write_meta(meta)
+        if int(gpus or 0) > 0 and not self._nvidia_gpus_available():
+            message = self._gpu_unavailable_message(gpus)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_file, 'a', encoding='utf-8') as f:
+                f.write(message + '\n')
+            meta.update({
+                'status': 'failed',
+                'end_time': self._now(),
+            })
+            self._write_meta(meta)
+            print(message, file=sys.stderr)
+            return str(job_id)
         job_env = self._capture_job_env(os.environ, self.env)
         env_exports = self._encode_env(job_env)
         wrapper.write_text(

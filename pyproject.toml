@@ -41,6 +41,7 @@ test = [
 include = ["taskq", "taskq.*"]
 
 [tool.setuptools.package-data]
+"taskq" = ["default.toml"]
 "taskq.backends.tmux" = ["wrapper.sh"]
 
 [tool.setuptools.dynamic]

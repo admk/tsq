@@ -28,7 +28,7 @@ socket = "taskq"
 [alloc]
 
 # GPUs required per job. Set to 0 for CPU-only jobs by default.
-gpus = 1
+gpus = 0
 
 # Queue slots required per job.
 slots = 1

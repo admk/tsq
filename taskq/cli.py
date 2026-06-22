@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+from importlib import resources
 
 import tomlkit
 
@@ -37,6 +38,7 @@ class CLI:
         },
     }
     rc_path = '.tq.toml'
+    default_config = 'default.toml'
 
     def __init__(self):
         super().__init__()
@@ -51,24 +53,30 @@ class CLI:
                 action_parser.add_argument(*option, **kwargs)
 
     def _load_config(self, args):
+        config = {}
+        try:
+            config = tomlkit.loads(
+                resources.files('taskq').joinpath(
+                    self.default_config).read_text(encoding='utf-8')
+            )
+        except (FileNotFoundError, tomlkit.exceptions.ParseError) as e:
+            print(f'Error parsing default config: {e}')
         if args.rc_file:
             with open(args.rc_file, 'r', encoding='utf-8') as f:
                 try:
-                    return tomlkit.load(f)
+                    return dict_merge(config, tomlkit.load(f))
                 except tomlkit.exceptions.ParseError as e:
                     print(f'Error parsing {args.rc_file}: {e}')
-                    return {}
+                    return config
         else:
             args.rc_file = self.rc_path
         rc_files = [
-            os.path.join(os.path.dirname(__file__), '..', 'default.toml'),
             '~/.config/tq.toml',
             self.rc_path,
         ]
-        config = {}
         for path in rc_files:
             try:
-                with open(path, 'r', encoding='utf-8') as f:
+                with open(os.path.expanduser(path), 'r', encoding='utf-8') as f:
                     try:
                         rc = tomlkit.load(f)
                     except tomlkit.exceptions.ParseError as e:
