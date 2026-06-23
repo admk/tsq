@@ -66,7 +66,10 @@ class RerunAction(WriteActionBase):
                 print(command)
                 ji = '<id>'
             else:
-                ji = self.backend.add(command, gpus, slots)
+                kwargs = {}
+                if hasattr(self.backend, 'rerun_env'):
+                    kwargs['env'] = self.backend.rerun_env(i)
+                ji = self.backend.add(command, gpus, slots, **kwargs)
             new_ids.append(ji)
         return new_ids
 

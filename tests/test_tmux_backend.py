@@ -4,6 +4,7 @@ import subprocess
 import pytest
 
 from taskq import TOOL_NAME
+from taskq.actions.write import RerunAction
 from taskq.backends import BACKENDS
 from taskq.backends.tmux.backend import TmuxBackend
 from taskq.common import FilterArgs
@@ -262,6 +263,30 @@ def test_tmux_add_captures_enqueue_environment(monkeypatch, tmux_backend):
     assert 'export CONFIG_WINS=from-shell' in wrapper
     assert 'export CONFIG_WINS=from-config' not in wrapper
     assert 'export API_TOKEN=secret' in wrapper
+    meta = read_meta(tmux_backend, int(job_id))
+    assert meta['env_file'].endswith('/env.json')
+    env = json.loads(
+        (tmux_backend._job_dir(int(job_id)) / 'env.json').read_text()
+    )
+    assert env['FOO'] == 'from-shell'
+
+
+def test_tmux_rerun_reuses_original_enqueue_environment(
+    monkeypatch, tmux_backend
+):
+    monkeypatch.setenv('HELLO', 'original')
+    job_id = int(tmux_backend.add('printenv HELLO', gpus=0, slots=1))
+    monkeypatch.setenv('HELLO', 'current')
+    action = RerunAction('rerun', {'name': 'rerun'})
+    action.backend = tmux_backend
+
+    new_id = int(action.rerun(tmux_backend.full_info([job_id]), True)[0])
+
+    wrapper = (tmux_backend._job_dir(new_id) / 'run.sh').read_text()
+    env = json.loads((tmux_backend._job_dir(new_id) / 'env.json').read_text())
+    assert 'export HELLO=original' in wrapper
+    assert 'export HELLO=current' not in wrapper
+    assert env['HELLO'] == 'original'
 
 
 def test_tmux_add_gpu_job_fails_immediately_without_nvidia(tmux_backend, capsys):

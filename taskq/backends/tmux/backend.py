@@ -172,6 +172,9 @@ class TmuxBackend(BackendBase):
     def _meta_file(self, job_id):
         return self._job_dir(job_id) / 'meta.json'
 
+    def _env_file(self, job_id):
+        return self._job_dir(job_id) / 'env.json'
+
     def _read_meta(self, job_id):
         with open(self._meta_file(job_id), 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -186,6 +189,26 @@ class TmuxBackend(BackendBase):
             json.dump(meta, f, indent=2, sort_keys=True)
             f.write('\n')
         os.replace(tmp, path)
+
+    def _write_env(self, job_id, env):
+        self._ensure_state()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        path = self._env_file(job_id)
+        tmp = path.with_suffix('.json.tmp')
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(env, f, indent=2, sort_keys=True)
+            f.write('\n')
+        os.replace(tmp, path)
+
+    def _read_env_file(self, path):
+        if not path:
+            return None
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
 
     def _all_meta(self):
         if not self.jobs_dir.exists():
@@ -443,11 +466,15 @@ class TmuxBackend(BackendBase):
             'end_time': end_time,
             'time_run': delta,
             'output_file': meta.get('output_file'),
+            'env_file': meta.get('env_file'),
             'session': meta.get('session'),
             'pid': meta.get('pid'),
             'cwd': meta.get('cwd'),
         }
         return {k: v for k, v in info.items() if v is not None}
+
+    def rerun_env(self, info):
+        return self._read_env_file(info.get('env_file'))
 
     def _filter_info(self, info, ids=None, filters=None):
         if ids is not None:
@@ -554,7 +581,7 @@ class TmuxBackend(BackendBase):
             out = self._tail_file(meta.get('output_file'), tail)
         return out
 
-    def add(self, command, gpus=None, slots=None, depends_on=None):
+    def add(self, command, gpus=None, slots=None, depends_on=None, env=None):
         alloc_config = self.config.get('alloc', {})
         gpus = gpus if gpus is not None else alloc_config.get('gpus', 0)
         slots = slots if slots is not None else alloc_config.get('slots', 1)
@@ -563,10 +590,15 @@ class TmuxBackend(BackendBase):
         session = self._session_name(job_id)
         job_dir = self._job_dir(job_id)
         output_file = job_dir / 'output.log'
+        env_file = self._env_file(job_id)
         wrapper = job_dir / 'run.sh'
         start_file = job_dir / 'start'
         cwd = os.getcwd()
         argv = shlex.split(command)
+        job_env = (
+            self._capture_job_env(os.environ, self.env)
+            if env is None else dict(env)
+        )
         meta = {
             'id': job_id,
             'command': command,
@@ -581,12 +613,14 @@ class TmuxBackend(BackendBase):
             'start_time': None,
             'end_time': None,
             'output_file': str(output_file),
+            'env_file': str(env_file),
             'wrapper': str(wrapper),
             'start_file': str(start_file),
             'session': session,
             'pid': None,
             'cwd': cwd,
         }
+        self._write_env(job_id, job_env)
         self._write_meta(meta)
         if int(gpus or 0) > 0 and not self._nvidia_gpus_available():
             message = self._gpu_unavailable_message(gpus)
@@ -600,7 +634,6 @@ class TmuxBackend(BackendBase):
             self._write_meta(meta)
             print(message, file=sys.stderr)
             return str(job_id)
-        job_env = self._capture_job_env(os.environ, self.env)
         env_exports = self._encode_env(job_env)
         wrapper.write_text(
             render_wrapper(
