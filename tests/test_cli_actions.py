@@ -100,6 +100,9 @@ def test_add_dry_run(fake_backend, rc_file, capsys):
     _, out = run_cli(['add', '-d', '-D', '1-3,5', 'echo', 'hi'], rc_file, capsys)
     assert out.strip() == f'{TOOL_NAME} add -N 1 -D 1,2,3,5 echo hi'
 
+    _, out = run_cli(['add', '-d', 'echo', 'a\nb'], rc_file, capsys)
+    assert out == f"{TOOL_NAME} add -N 1 echo 'a\\nb'\n"
+
 
 def test_add_invalid_dependency_id_prints_cli_error(fake_backend, rc_file, capsys):
     code = CLI().main(['-rc', str(rc_file), 'add', '-D', 'x', 'echo', 'hi'])

@@ -9,6 +9,7 @@ import itertools
 
 from .. import TOOL_NAME
 from ..common import tqdm, STDIN_TTY, FilterArgs
+from ..utils import escape_command_display
 from .base import register_action, DryActionBase
 from .filter import parse_id_selector
 
@@ -200,7 +201,7 @@ class AddAction(DryActionBase):
         if depends_on:
             argv += ['-D', ','.join(str(i) for i in depends_on)]
         argv += cls._dry_command_argv(command)
-        return shlex.join(argv)
+        return escape_command_display(shlex.join(argv))
 
     def main(self, args):
         commands = self._extrapolate_inputs(
