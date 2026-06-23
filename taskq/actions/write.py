@@ -85,6 +85,13 @@ class RerunAction(WriteActionBase):
             kwargs = {}
             if commit and hasattr(self.backend, 'rerun_env'):
                 kwargs['env'] = self.backend.rerun_env(i)
+            if i.get('git_commit'):
+                kwargs.update({
+                    'git_ref': i.get('git_ref') or i['git_commit'],
+                    'git_commit': i['git_commit'],
+                    'git_root': i.get('git_root'),
+                    'source_cwd': i.get('source_cwd') or i.get('cwd'),
+                })
             requests.append(AddRequest(command, gpus, slots, kwargs=kwargs))
         return add_repeated(
             self.backend, requests, repeat, commit=commit,
@@ -94,6 +101,7 @@ class RerunAction(WriteActionBase):
                     request.gpus,
                     request.slots,
                     depends_on,
+                    request.kwargs.get('git_ref'),
                 )
             ),
             desc='rerun',

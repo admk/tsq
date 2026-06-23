@@ -6,6 +6,8 @@ from typing import Mapping, Type
 
 
 class BackendBase:
+    supports_git_ref = False
+
     def __init__(self, name, config):
         super().__init__()
         self.name = name
@@ -102,4 +104,8 @@ def register_backend(name):
 
 
 class BackendNotFoundError(FileNotFoundError):
+    pass
+
+
+class BackendError(Exception):
     pass

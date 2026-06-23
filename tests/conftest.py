@@ -142,10 +142,12 @@ class FakeBackend(BackendBase):
     def interact(self, info):
         self.calls.append(('interact', info['id']))
 
-    def add(self, command, gpus, slots, depends_on=None):
+    def add(self, command, gpus, slots, depends_on=None, **kwargs):
         call = ('add', command, gpus, slots)
         if depends_on:
             call += (depends_on,)
+        if kwargs:
+            call += (kwargs,)
         self.calls.append(call)
         new_id = str(100 + len(self.added_ids))
         self.added_ids.append(new_id)

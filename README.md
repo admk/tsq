@@ -90,6 +90,24 @@ so one-off variables can be passed in the usual shell form:
 FOO=bar tq add printenv FOO
 ```
 
+With the tmux backend,
+jobs can be queued from a specific git branch, tag, or commit:
+
+```sh
+tq add --ref main pytest
+tq add --ref HEAD~1 sh -c 'make build && make test'
+```
+
+The ref is resolved to an exact commit when the job is queued.
+The job runs in a detached git worktree
+stored under taskq's job state directory.
+`rerun` and `requeue` reuse the same resolved commit
+and the original captured environment,
+even if the branch has moved since the original job was added.
+Worktrees remain inspectable until the job is removed
+or the backend is reset.
+Merging changes back is manual.
+
 ## Configuration
 
 `tq` reads TOML configuration in this order:

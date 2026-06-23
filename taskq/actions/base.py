@@ -3,7 +3,7 @@ from abc import abstractmethod
 from typing import Mapping, Type
 
 from .. import TOOL_NAME
-from ..backends import BACKENDS, BackendNotFoundError
+from ..backends import BACKENDS, BackendError, BackendNotFoundError
 
 
 class CLIError(Exception):
@@ -27,7 +27,7 @@ class ActionBase:
     def __call__(self, args, config):
         try:
             args = self.transform_args(args)
-        except CLIError as e:
+        except (CLIError, BackendError) as e:
             print(f'{TOOL_NAME}: error: {e}', file=sys.stderr)
             return 2
         backend = config['backend']
@@ -41,7 +41,11 @@ class ActionBase:
         except BackendNotFoundError as e:
             print(f'Backend {backend!r} not available, reason: {e}.')
             return 1
-        return self.main(args)
+        try:
+            return self.main(args)
+        except (CLIError, BackendError) as e:
+            print(f'{TOOL_NAME}: error: {e}', file=sys.stderr)
+            return 2
 
 
 class DryActionBase(ActionBase):

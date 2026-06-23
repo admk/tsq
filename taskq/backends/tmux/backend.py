@@ -13,7 +13,8 @@ from pathlib import Path
 from ... import TOOL_NAME
 from ...common import STATUSES, dict_simplify, file_tail_lines
 from ...common import project_config_dir, user_cache_dir, user_config_dir
-from ..base import BackendBase, register_backend
+from .. import git_ref as git_ref_utils
+from ..base import BackendBase, BackendError, register_backend
 
 
 def render_wrapper(job_id, argv, session, output_file, start_file, env_exports):
@@ -32,6 +33,7 @@ def render_wrapper(job_id, argv, session, output_file, start_file, env_exports):
 @register_backend('tmux')
 class TmuxBackend(BackendBase):
     BROKER_VERSION = '7'
+    supports_git_ref = True
 
     def __init__(self, name, config):
         super().__init__(name, config)
@@ -209,6 +211,21 @@ class TmuxBackend(BackendBase):
                 return json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             return None
+
+    def _prepare_git_checkout(
+        self, job_dir, git_ref=None, git_commit=None, git_root=None,
+        source_cwd=None,
+    ):
+        return git_ref_utils.prepare_checkout(
+            job_dir,
+            git_ref=git_ref,
+            git_commit=git_commit,
+            git_root=git_root,
+            source_cwd=source_cwd,
+        )
+
+    def resolve_git_ref(self, ref):
+        return git_ref_utils.resolve_ref(ref)
 
     def _all_meta(self):
         if not self.jobs_dir.exists():
@@ -471,6 +488,11 @@ class TmuxBackend(BackendBase):
             'session': meta.get('session'),
             'pid': meta.get('pid'),
             'cwd': meta.get('cwd'),
+            'source_cwd': meta.get('source_cwd'),
+            'git_ref': meta.get('git_ref'),
+            'git_commit': meta.get('git_commit'),
+            'git_root': meta.get('git_root'),
+            'git_worktree': meta.get('git_worktree'),
         }
         return {k: v for k, v in info.items() if v is not None}
 
@@ -541,6 +563,8 @@ class TmuxBackend(BackendBase):
                 self._tmux('kill-session', '-t', session, check=False)
 
     def backend_reset(self, args):
+        for meta in self._all_meta():
+            git_ref_utils.remove_worktree(meta)
         shutil.rmtree(self.state_dir, ignore_errors=True)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         lock_file = self.state_dir / 'next_id.lock'
@@ -583,7 +607,10 @@ class TmuxBackend(BackendBase):
             out = self._tail_file(meta.get('output_file'), tail)
         return out
 
-    def add(self, command, gpus=None, slots=None, depends_on=None, env=None):
+    def add(
+        self, command, gpus=None, slots=None, depends_on=None, env=None,
+        git_ref=None, git_commit=None, git_root=None, source_cwd=None,
+    ):
         alloc_config = self.config.get('alloc', {})
         gpus = gpus if gpus is not None else alloc_config.get('gpus', 0)
         slots = slots if slots is not None else alloc_config.get('slots', 1)
@@ -595,7 +622,18 @@ class TmuxBackend(BackendBase):
         env_file = self._env_file(job_id)
         wrapper = job_dir / 'run.sh'
         start_file = job_dir / 'start'
-        cwd = os.getcwd()
+        git_meta = {}
+        try:
+            git_meta, cwd = self._prepare_git_checkout(
+                job_dir,
+                git_ref=git_ref,
+                git_commit=git_commit,
+                git_root=git_root,
+                source_cwd=source_cwd,
+            )
+        except BackendError:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
         argv = shlex.split(command)
         job_env = (
             self._capture_job_env(os.environ, self.env)
@@ -622,6 +660,7 @@ class TmuxBackend(BackendBase):
             'pid': None,
             'cwd': cwd,
         }
+        meta.update({k: v for k, v in git_meta.items() if v is not None})
         self._write_env(job_id, job_env)
         self._write_meta(meta)
         if int(gpus or 0) > 0 and not self._nvidia_gpus_available():
@@ -634,6 +673,7 @@ class TmuxBackend(BackendBase):
                 'end_time': self._now(),
             })
             self._write_meta(meta)
+            git_ref_utils.remove_worktree(meta)
             print(message, file=sys.stderr)
             return str(job_id)
         env_exports = self._encode_env(job_env)
@@ -675,4 +715,5 @@ class TmuxBackend(BackendBase):
             return
         if session and self._session_exists(session):
             self._tmux('kill-session', '-t', session, check=False)
+        git_ref_utils.remove_worktree(meta)
         shutil.rmtree(self._job_dir(info['id']), ignore_errors=True)

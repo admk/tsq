@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -114,6 +115,25 @@ def read_fake_tmux_calls(state_path):
     return json.loads(state_path.read_text(encoding='utf-8'))['calls']
 
 
+def git(repo, *args):
+    return subprocess.run(
+        ['git', '-C', str(repo), *args],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+
+
+def init_git_repo(path):
+    path.mkdir()
+    git(path, 'init')
+    git(path, 'config', 'user.email', 'taskq@example.test')
+    git(path, 'config', 'user.name', 'Taskq Tests')
+    (path / 'script.sh').write_text('echo hi\n', encoding='utf-8')
+    git(path, 'add', '.')
+    git(path, 'commit', '-m', 'initial')
+
+
 def write_tmux_rc(rc_file):
     rc_file.write_text(
         '\n'.join([
@@ -221,3 +241,25 @@ def test_tq_add_dry_run_prints_command_without_backend_details(
     assert out.strip() == f'{TOOL_NAME} add -N 1 sleep 1'
     assert not fake_tmux_state.exists()
     assert not state_root.exists()
+
+
+def test_tq_add_dry_run_ref_validates_without_creating_worktree(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr('taskq.actions.add.STDIN_TTY', True)
+    fake_tmux_state = install_fake_tmux(tmp_path, monkeypatch)
+    rc_file = tmp_path / 'tq.toml'
+    state_root = tmp_path / 'cache' / TOOL_NAME
+    repo = tmp_path / 'repo'
+    init_git_repo(repo)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    write_tmux_rc(rc_file)
+
+    code, out = run_cli(['add', '-d', '--ref', 'HEAD', 'sleep 1'], rc_file, capsys)
+
+    assert code is None
+    assert out.strip() == f'{TOOL_NAME} add --ref HEAD -N 1 sleep 1'
+    assert not fake_tmux_state.exists()
+    assert not state_root.exists()
+    assert str(state_root) not in git(repo, 'worktree', 'list', '--porcelain')

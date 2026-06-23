@@ -64,6 +64,30 @@ def read_meta(backend, job_id):
     return json.loads((backend._job_dir(job_id) / 'meta.json').read_text())
 
 
+def git(repo, *args):
+    return subprocess.run(
+        ['git', '-C', str(repo), *args],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+
+
+def init_git_repo(path):
+    path.mkdir()
+    git(path, 'init')
+    git(path, 'config', 'user.email', 'taskq@example.test')
+    git(path, 'config', 'user.name', 'Taskq Tests')
+    (path / 'script.sh').write_text('echo one\n', encoding='utf-8')
+    git(path, 'add', '.')
+    git(path, 'commit', '-m', 'one')
+    first = git(path, 'rev-parse', 'HEAD')
+    (path / 'script.sh').write_text('echo two\n', encoding='utf-8')
+    git(path, 'commit', '-am', 'two')
+    second = git(path, 'rev-parse', 'HEAD')
+    return first, second
+
+
 def test_tmux_registered_and_socket_commands(tmux_backend):
     assert BACKENDS['tmux'] is TmuxBackend
     assert TmuxBackend._sanitize_name('/tmp/tq.sock') == 'tmp-tq-sock'
@@ -287,6 +311,114 @@ def test_tmux_rerun_reuses_original_enqueue_environment(
     assert 'export HELLO=original' in wrapper
     assert 'export HELLO=current' not in wrapper
     assert env['HELLO'] == 'original'
+
+
+def test_tmux_add_ref_creates_detached_worktree(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    first, second = init_git_repo(repo)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv('HELLO', 'original')
+
+    job_id = int(tmux_backend.add('cat script.sh', gpus=0, slots=1, git_ref='HEAD~1'))
+
+    meta = read_meta(tmux_backend, job_id)
+    assert meta['git_ref'] == 'HEAD~1'
+    assert meta['git_commit'] == first
+    assert meta['git_root'] == str(repo)
+    assert meta['source_cwd'] == str(repo)
+    assert meta['cwd'] == meta['git_worktree']
+    assert (tmux_backend._job_dir(job_id) / 'worktree' / 'script.sh').read_text(
+        encoding='utf-8'
+    ) == 'echo one\n'
+    assert git(repo, 'rev-parse', 'HEAD') == second
+    env = json.loads((tmux_backend._job_dir(job_id) / 'env.json').read_text())
+    assert env['HELLO'] == 'original'
+
+
+def test_tmux_add_ref_preserves_relative_cwd(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    init_git_repo(repo)
+    subdir = repo / 'subdir'
+    subdir.mkdir()
+    (subdir / 'file.txt').write_text('hi\n', encoding='utf-8')
+    git(repo, 'add', '.')
+    git(repo, 'commit', '-m', 'subdir')
+    commit = git(repo, 'rev-parse', 'HEAD')
+    monkeypatch.chdir(subdir)
+
+    job_id = int(tmux_backend.add('pwd', gpus=0, slots=1, git_ref=commit))
+
+    meta = read_meta(tmux_backend, job_id)
+    assert meta['source_cwd'] == str(subdir)
+    assert meta['cwd'] == str(tmux_backend._job_dir(job_id) / 'worktree' / 'subdir')
+
+
+def test_tmux_add_ref_missing_relative_cwd_cleans_worktree(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    first, _ = init_git_repo(repo)
+    subdir = repo / 'subdir'
+    subdir.mkdir()
+    monkeypatch.chdir(subdir)
+
+    with pytest.raises(Exception, match='does not exist at git commit'):
+        tmux_backend.add('pwd', gpus=0, slots=1, git_ref=first)
+
+    assert not list(tmux_backend.jobs_dir.glob('*/meta.json'))
+    assert not (tmux_backend._job_dir(1) / 'worktree').exists()
+    assert str(tmux_backend._job_dir(1) / 'worktree') not in git(
+        repo, 'worktree', 'list', '--porcelain'
+    )
+
+
+def test_tmux_rerun_ref_uses_stored_commit_and_env(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    first, _ = init_git_repo(repo)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv('HELLO', 'original')
+    job_id = int(tmux_backend.add('cat script.sh', gpus=0, slots=1, git_ref='HEAD~1'))
+    monkeypatch.setenv('HELLO', 'current')
+    (repo / 'script.sh').write_text('echo three\n', encoding='utf-8')
+    git(repo, 'commit', '-am', 'three')
+    action = RerunAction('rerun', {'name': 'rerun'})
+    action.backend = tmux_backend
+
+    new_id = int(action.rerun(tmux_backend.full_info([job_id]), True)[0][0])
+
+    meta = read_meta(tmux_backend, new_id)
+    assert meta['git_commit'] == first
+    assert (tmux_backend._job_dir(new_id) / 'worktree' / 'script.sh').read_text(
+        encoding='utf-8'
+    ) == 'echo one\n'
+    env = json.loads((tmux_backend._job_dir(new_id) / 'env.json').read_text())
+    assert env['HELLO'] == 'original'
+
+
+def test_tmux_remove_and_reset_cleanup_git_worktrees(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    init_git_repo(repo)
+    monkeypatch.chdir(repo)
+    first_id = int(tmux_backend.add('true', gpus=0, slots=1, git_ref='HEAD'))
+    second_id = int(tmux_backend.add('true', gpus=0, slots=1, git_ref='HEAD'))
+    first_worktree = read_meta(tmux_backend, first_id)['git_worktree']
+    second_worktree = read_meta(tmux_backend, second_id)['git_worktree']
+
+    tmux_backend.remove({'id': first_id})
+    assert not (tmp_path / first_worktree).exists()
+    assert first_worktree not in git(repo, 'worktree', 'list', '--porcelain')
+
+    tmux_backend.backend_reset(None)
+    assert not (tmp_path / second_worktree).exists()
+    assert second_worktree not in git(repo, 'worktree', 'list', '--porcelain')
 
 
 def test_tmux_add_gpu_job_fails_immediately_without_nvidia(tmux_backend, capsys):

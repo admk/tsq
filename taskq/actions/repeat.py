@@ -54,8 +54,10 @@ def dry_command_argv(command):
     return argv
 
 
-def dry_add_command(command, gpus, slots, depends_on=None):
+def dry_add_command(command, gpus, slots, depends_on=None, ref=None):
     argv = [TOOL_NAME, 'add']
+    if ref:
+        argv += ['--ref', str(ref)]
     if include_gpus(gpus):
         argv += ['-G', str(gpus)]
     argv += ['-N', str(slots)]

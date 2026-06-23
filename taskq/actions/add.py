@@ -1,3 +1,4 @@
+import os
 import re
 import shlex
 import sys
@@ -9,6 +10,7 @@ import itertools
 
 from ..common import STDIN_TTY, FilterArgs
 from .base import register_action, DryActionBase
+from .base import CLIError
 from .filter import parse_id_selector
 from .repeat import (
     AddRequest,
@@ -38,6 +40,13 @@ class AddAction(DryActionBase):
             'help': (
                 'Only start after these job IDs complete successfully. '
                 'Accepts comma-separated IDs and ranges, e.g. "1-3,5".'),
+        },
+        ('--ref', ): {
+            'type': str,
+            'default': None,
+            'help': (
+                'Run the job from this git branch, tag, or commit. '
+                'The ref is resolved to an exact commit when queued.'),
         },
         **repeat_options,
         ('-u', '--unique'): {
@@ -180,6 +189,29 @@ class AddAction(DryActionBase):
         )
         return gpus, slots
 
+    def _validate_ref_support(self, ref):
+        if ref and not getattr(self.backend, 'supports_git_ref', False):
+            raise CLIError(
+                f"backend {self.backend.name!r} does not support --ref")
+
+    def _resolve_ref(self, ref):
+        self._validate_ref_support(ref)
+        if ref and hasattr(self.backend, 'resolve_git_ref'):
+            git_root, git_commit = self.backend.resolve_git_ref(ref)
+            return {
+                'git_ref': ref,
+                'git_commit': git_commit,
+                'git_root': git_root,
+                'source_cwd': os.getcwd(),
+            }
+        if ref:
+            return {'git_ref': ref}
+        return {}
+
+    @staticmethod
+    def _request_kwargs(ref_kwargs):
+        return dict(ref_kwargs)
+
     def main(self, args):
         commands = self._extrapolate_inputs(
             args.command, args.from_file, args.separator)
@@ -204,10 +236,14 @@ class AddAction(DryActionBase):
             if STDIN_TTY:
                 print('Use "-f -" to read commands from stdin.')
             return
+        ref_kwargs = self._resolve_ref(args.ref)
         if not args.commit:
             gpus, slots = self._resolved_alloc(self.backend.config, args)
             requests = [
-                AddRequest(c, gpus, slots, args.depends_on)
+                AddRequest(
+                    c, gpus, slots, args.depends_on,
+                    kwargs=self._request_kwargs(ref_kwargs),
+                )
                 for c in commands
             ]
             dry_commands = []
@@ -219,6 +255,7 @@ class AddAction(DryActionBase):
                         request.gpus,
                         request.slots,
                         depends_on,
+                        request.kwargs.get('git_ref'),
                     )
                 ),
             )
@@ -228,7 +265,10 @@ class AddAction(DryActionBase):
                 print(textwrap.indent('\n'.join(skipped), '  '))
             return
         requests = [
-            AddRequest(c, args.gpus, args.slots, args.depends_on)
+            AddRequest(
+                c, args.gpus, args.slots, args.depends_on,
+                kwargs=self._request_kwargs(ref_kwargs),
+            )
             for c in commands
         ]
         id_groups = add_repeated(

@@ -129,6 +129,20 @@ def test_add_invalid_repeat_count_prints_cli_error(rc_file, capsys):
     assert 'Traceback' not in captured.err
 
 
+def test_add_ref_rejected_by_unsupported_backend(fake_backend, rc_file, capsys):
+    code = CLI().main([
+        '-rc', str(rc_file), 'add', '--ref', 'main', 'echo', 'hi',
+    ])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert f"{TOOL_NAME}: error: backend 'fake' does not support --ref" in captured.err
+    assert not [
+        call for call in fake_backend.instances[-1].calls
+        if call[0] == 'add'
+    ]
+
+
 def test_add_repeat_chains_same_command(fake_backend, rc_file, capsys):
     _, out = run_cli(['add', '-R', '3', 'echo', 'hi'], rc_file, capsys)
 
