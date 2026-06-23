@@ -362,6 +362,18 @@ def test_tmux_job_info_full_info_and_filters(tmux_backend):
     assert full['status'] == 'queued'
 
 
+def test_tmux_job_info_orders_ids_numerically(tmux_backend):
+    for i in range(12):
+        tmux_backend.add(f'echo {i}', gpus=0, slots=1)
+
+    ids = [
+        item['id']
+        for item in tmux_backend.job_info(filters=FilterArgs())
+    ]
+
+    assert ids == list(range(1, 13))
+
+
 def test_tmux_output_waits_and_attaches(monkeypatch, tmux_backend, capsys):
     job_id = int(tmux_backend.add('sleep 1', gpus=0, slots=1))
     meta = read_meta(tmux_backend, job_id)

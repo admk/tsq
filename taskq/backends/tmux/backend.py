@@ -214,12 +214,13 @@ class TmuxBackend(BackendBase):
         if not self.jobs_dir.exists():
             return []
         metas = []
-        for path in sorted(self.jobs_dir.glob('*/meta.json')):
+        for path in self.jobs_dir.glob('*/meta.json'):
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     metas.append(json.load(f))
             except (json.JSONDecodeError, OSError):
                 continue
+        metas.sort(key=lambda meta: int(meta['id']))
         return metas
 
     def _session_name(self, job_id):
