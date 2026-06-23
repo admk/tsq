@@ -103,6 +103,13 @@ def test_add_dry_run(fake_backend, rc_file, capsys):
     _, out = run_cli(['add', '-d', 'echo', 'a\nb'], rc_file, capsys)
     assert out == f"{TOOL_NAME} add -N 1 echo 'a\\nb'\n"
 
+    _, out = run_cli(['add', '-d', '-R', '3', 'echo', 'hi'], rc_file, capsys)
+    assert out == '\n'.join([
+        f'{TOOL_NAME} add -N 1 echo hi',
+        f"{TOOL_NAME} add -N 1 -D '<id>' echo hi",
+        f"{TOOL_NAME} add -N 1 -D '<id>' echo hi",
+    ]) + '\n'
+
 
 def test_add_invalid_dependency_id_prints_cli_error(fake_backend, rc_file, capsys):
     code = CLI().main(['-rc', str(rc_file), 'add', '-D', 'x', 'echo', 'hi'])
@@ -111,6 +118,30 @@ def test_add_invalid_dependency_id_prints_cli_error(fake_backend, rc_file, capsy
     assert code == 2
     assert f"{TOOL_NAME}: error: invalid job ID 'x'" in captured.err
     assert 'Traceback' not in captured.err
+
+
+def test_add_invalid_repeat_count_prints_cli_error(rc_file, capsys):
+    code = CLI().main(['-rc', str(rc_file), 'add', '-R', '0', 'echo', 'hi'])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert f'{TOOL_NAME}: error: repeat count must be at least 1' in captured.err
+    assert 'Traceback' not in captured.err
+
+
+def test_add_repeat_chains_same_command(fake_backend, rc_file, capsys):
+    _, out = run_cli(['add', '-R', '3', 'echo', 'hi'], rc_file, capsys)
+
+    assert out.strip() == 'Added: 100, 101, 102'
+    calls = [
+        call for call in fake_backend.instances[-1].calls
+        if call[0] == 'add'
+    ]
+    assert calls == [
+        ('add', 'echo hi', None, None),
+        ('add', 'echo hi', None, None, ['100']),
+        ('add', 'echo hi', None, None, ['101']),
+    ]
 
 
 def test_add_extrapolates_stdin_arguments(monkeypatch):
@@ -270,6 +301,52 @@ def test_write_actions_and_danger_guard(fake_backend, rc_file, capsys):
     _, out = run_cli(['rerun', '-d', '1'], rc_file, capsys)
     assert 'python train.py' in out
     assert '<id>' in out
+    calls = fake_backend.instances[-1].calls
+    assert not [call for call in calls if call[0] == 'add']
+
+
+def test_rerun_repeat_chains_same_command(fake_backend, rc_file, capsys):
+    _, out = run_cli(['rerun', '-R', '3', '1'], rc_file, capsys)
+
+    assert out.strip() == 'Reran: 1 -> 100 -> 101 -> 102'
+    calls = [
+        call for call in fake_backend.instances[-1].calls
+        if call[0] == 'add'
+    ]
+    assert calls == [
+        ('add', 'python train.py', 1, 2),
+        ('add', 'python train.py', 1, 2, ['100']),
+        ('add', 'python train.py', 1, 2, ['101']),
+    ]
+
+
+def test_rerun_short_running_filter_still_works(fake_backend, rc_file, capsys):
+    _, out = run_cli(['rerun', '-r'], rc_file, capsys)
+
+    assert out.strip() == 'Reran: 1 -> 100'
+    calls = [
+        call for call in fake_backend.instances[-1].calls
+        if call[0] == 'add'
+    ]
+    assert calls == [('add', 'python train.py', 1, 2)]
+
+
+def test_requeue_repeat_chains_same_command(fake_backend, rc_file, capsys):
+    _, out = run_cli(['requeue', '-R', '2', '1'], rc_file, capsys)
+
+    assert out.strip() == 'Requeued: 1 -> 100 -> 101'
+    calls = fake_backend.instances[-1].calls
+    assert ('add', 'python train.py', 1, 2) in calls
+    assert ('add', 'python train.py', 1, 2, ['100']) in calls
+    assert ('remove', 1, True) in calls
+
+
+def test_rerun_repeat_dry_run_chains_dependencies(fake_backend, rc_file, capsys):
+    _, out = run_cli(['rerun', '-d', '-R', '2', '1'], rc_file, capsys)
+
+    assert f'{TOOL_NAME} add -G 1 -N 2 python train.py' in out
+    assert f"{TOOL_NAME} add -G 1 -N 2 -D '<id>' python train.py" in out
+    assert 'Reran: 1 -> <id> -> <id>' in out
     calls = fake_backend.instances[-1].calls
     assert not [call for call in calls if call[0] == 'add']
 

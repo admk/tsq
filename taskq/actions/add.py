@@ -7,11 +7,16 @@ import textwrap
 import argparse
 import itertools
 
-from .. import TOOL_NAME
-from ..common import tqdm, STDIN_TTY, FilterArgs
-from ..utils import escape_command_display
+from ..common import STDIN_TTY, FilterArgs
 from .base import register_action, DryActionBase
 from .filter import parse_id_selector
+from .repeat import (
+    AddRequest,
+    add_repeated,
+    dry_add_command,
+    repeat_options,
+    validate_repeat_count,
+)
 
 
 @register_action('add', 'add jobs', aliases=['a'])
@@ -34,6 +39,7 @@ class AddAction(DryActionBase):
                 'Only start after these job IDs complete successfully. '
                 'Accepts comma-separated IDs and ranges, e.g. "1-3,5".'),
         },
+        **repeat_options,
         ('-u', '--unique'): {
             'action': 'store_true',
             'help':
@@ -74,6 +80,7 @@ class AddAction(DryActionBase):
             parse_id_selector(args.depends_on)
             if args.depends_on else []
         )
+        args.repeat = validate_repeat_count(args.repeat)
         return args
 
     @staticmethod
@@ -173,36 +180,6 @@ class AddAction(DryActionBase):
         )
         return gpus, slots
 
-    @staticmethod
-    def _include_gpus(gpus):
-        try:
-            return int(gpus) > 0
-        except (TypeError, ValueError):
-            return bool(gpus)
-
-    @staticmethod
-    def _dry_command_argv(command):
-        argv = shlex.split(command)
-        if len(argv) == 1 and re.search(r'\s', argv[0]):
-            try:
-                split_arg = shlex.split(argv[0])
-            except ValueError:
-                return argv
-            if len(split_arg) > 1:
-                return split_arg
-        return argv
-
-    @classmethod
-    def _dry_add_command(cls, command, gpus, slots, depends_on=None):
-        argv = [TOOL_NAME, 'add']
-        if cls._include_gpus(gpus):
-            argv += ['-G', str(gpus)]
-        argv += ['-N', str(slots)]
-        if depends_on:
-            argv += ['-D', ','.join(str(i) for i in depends_on)]
-        argv += cls._dry_command_argv(command)
-        return escape_command_display(shlex.join(argv))
-
     def main(self, args):
         commands = self._extrapolate_inputs(
             args.command, args.from_file, args.separator)
@@ -229,22 +206,34 @@ class AddAction(DryActionBase):
             return
         if not args.commit:
             gpus, slots = self._resolved_alloc(self.backend.config, args)
-            dry_commands = [
-                self._dry_add_command(c, gpus, slots, args.depends_on)
+            requests = [
+                AddRequest(c, gpus, slots, args.depends_on)
                 for c in commands
             ]
+            dry_commands = []
+            add_repeated(
+                self.backend, requests, args.repeat, commit=False,
+                dry_run=lambda request, depends_on: dry_commands.append(
+                    dry_add_command(
+                        request.command,
+                        request.gpus,
+                        request.slots,
+                        depends_on,
+                    )
+                ),
+            )
             print('\n'.join(dry_commands))
             if skipped:
                 print('Skipped commands:')
                 print(textwrap.indent('\n'.join(skipped), '  '))
             return
-        ids = []
-        for c in tqdm(commands, desc='add'):
-            output = self.backend.add(
-                c, args.gpus, args.slots,
-                depends_on=args.depends_on,
-            )
-            ids.append(output)
+        requests = [
+            AddRequest(c, args.gpus, args.slots, args.depends_on)
+            for c in commands
+        ]
+        id_groups = add_repeated(
+            self.backend, requests, args.repeat, commit=args.commit)
+        ids = [job_id for group in id_groups for job_id in group]
         if any(ids):
             print('Added:', ', '.join(ids))
         if args.interact and len(ids) > 1:

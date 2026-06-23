@@ -280,7 +280,7 @@ def test_tmux_rerun_reuses_original_enqueue_environment(
     action = RerunAction('rerun', {'name': 'rerun'})
     action.backend = tmux_backend
 
-    new_id = int(action.rerun(tmux_backend.full_info([job_id]), True)[0])
+    new_id = int(action.rerun(tmux_backend.full_info([job_id]), True)[0][0])
 
     wrapper = (tmux_backend._job_dir(new_id) / 'run.sh').read_text()
     env = json.loads((tmux_backend._job_dir(new_id) / 'env.json').read_text())

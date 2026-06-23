@@ -4,6 +4,13 @@ from .. import TOOL_NAME
 from ..common import tqdm
 from .base import register_action, DryActionBase
 from .filter import FilterActionBase
+from .repeat import (
+    AddRequest,
+    add_repeated,
+    dry_add_command,
+    repeat_options,
+    validate_repeat_count,
+)
 
 
 
@@ -56,31 +63,51 @@ class RemoveAction(WriteActionBase):
 
 @register_action('rerun', 'rerun jobs', aliases=['rr'])
 class RerunAction(WriteActionBase):
-    def rerun(self, info, commit):
-        new_ids = []
-        for i in tqdm(info, desc='rerun'):
+    def __init__(self, name, parser_kwargs):
+        super().__init__(name, parser_kwargs)
+        self.options.update(repeat_options)
+
+    def transform_args(self, args):
+        args = super().transform_args(args)
+        args.repeat = validate_repeat_count(args.repeat)
+        return args
+
+    @staticmethod
+    def format_id_chain(ids):
+        return ' -> '.join(str(job_id) for job_id in ids)
+
+    def rerun(self, info, commit, repeat=1):
+        requests = []
+        for i in info:
             command = i['command']
             gpus = i['gpus_required']
             slots = i['slots_required']
-            if not commit:
-                print(command)
-                ji = '<id>'
-            else:
-                kwargs = {}
-                if hasattr(self.backend, 'rerun_env'):
-                    kwargs['env'] = self.backend.rerun_env(i)
-                ji = self.backend.add(command, gpus, slots, **kwargs)
-            new_ids.append(ji)
-        return new_ids
+            kwargs = {}
+            if commit and hasattr(self.backend, 'rerun_env'):
+                kwargs['env'] = self.backend.rerun_env(i)
+            requests.append(AddRequest(command, gpus, slots, kwargs=kwargs))
+        return add_repeated(
+            self.backend, requests, repeat, commit=commit,
+            dry_run=lambda request, depends_on: print(
+                dry_add_command(
+                    request.command,
+                    request.gpus,
+                    request.slots,
+                    depends_on,
+                )
+            ),
+            desc='rerun',
+        )
 
     def main(self, args):
         info = self.backend.full_info(self.ids, self.filters)
         if not info:
             print('No job to rerun.')
             return
-        new_ids = self.rerun(info, args.commit)
+        new_ids = self.rerun(info, args.commit, args.repeat)
         reran_ids = ', '.join(
-            f"{i['id']} -> {j}" for i, j in zip(info, new_ids))
+            f"{i['id']} -> {self.format_id_chain(j)}"
+            for i, j in zip(info, new_ids))
         print('Reran:', reran_ids)
 
 
@@ -91,8 +118,9 @@ class RequeueAction(RerunAction, RemoveAction):
         if not info:
             print('No job to requeue.')
             return
-        new_ids = self.rerun(info, args.commit)
+        new_ids = self.rerun(info, args.commit, args.repeat)
         self.remove(info, args.commit)
         requeued_ids = ', '.join(
-            f"{i['id']} -> {j}" for i, j in zip(info, new_ids))
+            f"{i['id']} -> {self.format_id_chain(j)}"
+            for i, j in zip(info, new_ids))
         print('Requeued:', requeued_ids)

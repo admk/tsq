@@ -236,6 +236,7 @@ to avoid accidental bulk changes.
 | `tq add -G N CMD...` | Require `N` GPUs. |
 | `tq add -N N CMD...` | Require `N` slots. |
 | `tq add -D IDS CMD...` | Only start after the selected jobs complete successfully. Accepts IDs and ranges like `1-3,5`. |
+| `tq add -R N CMD...` | Queue each command `N` times, chaining repeated instances of the same command. |
 | `tq add -u CMD...` | Queue only if the command is not already queued/known. |
 | `tq add -i CMD...` | Queue one command and attach when it starts. |
 | `tq add -f FILE` | Read one command per line from a file. |
@@ -290,7 +291,9 @@ are `id`, `status`, `slots`, `gpus`, `gpu_ids`, `enqueue`,
 | `tq kill ID` / `tq k ID` | Kill running jobs. |
 | `tq remove ID` / `tq rm ID` | Remove jobs and metadata. |
 | `tq rerun ID` / `tq rr ID` | Add a new job with the same command/resources. |
+| `tq rerun -R N ID` | Rerun each selected job `N` times, chaining repeated instances of the same command. |
 | `tq requeue ID` / `tq rq ID` | Rerun then remove the old job. |
+| `tq requeue -R N ID` | Requeue each selected job `N` times, chaining repeated instances of the same command. |
 | `tq remove --success` | Remove successful jobs. |
 | `tq kill --running` | Kill all running jobs. |
 | `tq remove --all` | Remove all jobs. |
