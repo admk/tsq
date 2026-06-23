@@ -433,9 +433,17 @@ def test_tmux_kill_remove_and_backend_reset(tmux_backend):
 def test_tmux_backend_reset_resets_next_id(tmux_backend):
     job_id = int(tmux_backend.add('echo first', gpus=0, slots=1))
     assert job_id == 1
-    tmux_backend.remove({'id': job_id})
+    stale_file = tmux_backend.state_dir / 'stale-cache-file'
+    stale_file.write_text('stale', encoding='utf-8')
+    assert tmux_backend._job_dir(job_id).exists()
+    assert tmux_backend.broker_config_file.exists()
 
     tmux_backend.backend_reset(None)
+
+    assert not tmux_backend._job_dir(job_id).exists()
+    assert not tmux_backend.broker_config_file.exists()
+    assert not stale_file.exists()
+    assert tmux_backend.counter_file.read_text(encoding='utf-8') == '1'
 
     next_job_id = int(tmux_backend.add('echo second', gpus=0, slots=1))
     assert next_job_id == 1

@@ -541,7 +541,8 @@ class TmuxBackend(BackendBase):
                 self._tmux('kill-session', '-t', session, check=False)
 
     def backend_reset(self, args):
-        self._ensure_state()
+        shutil.rmtree(self.state_dir, ignore_errors=True)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
         lock_file = self.state_dir / 'next_id.lock'
         with open(lock_file, 'w', encoding='utf-8') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
