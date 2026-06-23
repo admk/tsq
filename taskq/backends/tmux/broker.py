@@ -233,6 +233,45 @@ def finished_exitcode(meta):
     return None
 
 
+def dependency_state(meta, metas_by_id):
+    for dependency in meta.get('depends_on') or []:
+        try:
+            dependency = int(dependency)
+        except (TypeError, ValueError):
+            return 'failed', f'invalid dependency {dependency!r}'
+        if dependency == int(meta['id']):
+            return 'failed', f'job cannot depend on itself ({dependency})'
+        dependency_meta = metas_by_id.get(dependency)
+        if dependency_meta is None:
+            return 'failed', f'dependency {dependency} does not exist'
+        status = dependency_meta.get('status')
+        if status == 'success':
+            continue
+        if status in {'failed', 'killed', 'interrupted'}:
+            return 'failed', (
+                f'dependency {dependency} ended with status {status}')
+        return 'pending', None
+    return 'ready', None
+
+
+def mark_dependency_failed(meta, path, reason):
+    output_file = meta.get('output_file')
+    if output_file:
+        try:
+            Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+            with open(output_file, 'a', encoding='utf-8') as f:
+                f.write(f'[taskq] job {meta["id"]} not started: {reason}\n')
+        except OSError:
+            pass
+    meta.update({
+        'status': 'failed',
+        'exitcode': None,
+        'end_time': now(),
+    })
+    write_meta(meta, path)
+    return meta
+
+
 def start_job(args, path, meta, gpu_ids=None):
     job_id = meta['id']
     session = meta.get('session') or f'{args.prefix}-{job_id}'
@@ -338,6 +377,7 @@ def tick(args):
     metas = []
     for path, meta in all_meta(args):
         metas.append((path, refresh_running(args, path, meta)))
+    metas_by_id = {int(meta['id']): meta for _, meta in metas}
 
     running_slots = sum(
         int(meta.get('slots_required') or 1)
@@ -361,6 +401,13 @@ def tick(args):
         key=lambda item: int(item[1].get('id') or 0),
     )
     for path, meta in queued:
+        state, reason = dependency_state(meta, metas_by_id)
+        if state == 'pending':
+            continue
+        if state == 'failed':
+            meta = mark_dependency_failed(meta, path, reason)
+            metas_by_id[int(meta['id'])] = meta
+            continue
         required = int(meta.get('slots_required') or 1)
         can_start = running_slots + required <= slots
         can_oversubscribe = running_slots == 0 and required > slots

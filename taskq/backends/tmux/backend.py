@@ -437,6 +437,7 @@ class TmuxBackend(BackendBase):
             'slots_required': int(meta.get('slots_required') or 1),
             'gpus_required': int(meta.get('gpus_required') or 0),
             'gpu_ids': meta.get('gpu_ids', ''),
+            'depends_on': meta.get('depends_on', []),
             'enqueue_time': self._parse_time(meta.get('enqueue_time')),
             'start_time': start_time,
             'end_time': end_time,
@@ -553,10 +554,11 @@ class TmuxBackend(BackendBase):
             out = self._tail_file(meta.get('output_file'), tail)
         return out
 
-    def add(self, command, gpus=None, slots=None):
+    def add(self, command, gpus=None, slots=None, depends_on=None):
         alloc_config = self.config.get('alloc', {})
         gpus = gpus if gpus is not None else alloc_config.get('gpus', 0)
         slots = slots if slots is not None else alloc_config.get('slots', 1)
+        depends_on = [int(job_id) for job_id in depends_on or []]
         job_id = self._next_id()
         session = self._session_name(job_id)
         job_dir = self._job_dir(job_id)
@@ -574,6 +576,7 @@ class TmuxBackend(BackendBase):
             'slots_required': slots,
             'gpus_required': gpus,
             'gpu_ids': '',
+            'depends_on': depends_on,
             'enqueue_time': self._now(),
             'start_time': None,
             'end_time': None,

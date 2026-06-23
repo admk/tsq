@@ -141,11 +141,13 @@ class TaskSpoolerBackend(BackendBase):
         print('Interact action is not supported by the ts backend.')
         return ''
 
-    def add(self, command, gpus=None, slots=None):
+    def add(self, command, gpus=None, slots=None, depends_on=None):
         torun = []
         alloc_config = self.config.get('alloc', {})
         gpus = gpus if gpus is not None else alloc_config.get('gpus', 0)
         slots = slots if slots is not None else alloc_config.get('slots', 1)
+        for job_id in depends_on or []:
+            torun += ['-D', job_id]
         if gpus > 0:
             torun += ['-G', gpus]
         torun += ['-N', slots]

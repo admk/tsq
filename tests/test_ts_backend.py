@@ -92,6 +92,10 @@ def test_ts_add_output_and_write_commands(ts_backend):
     ts_backend.add('echo hello world', gpus=2, slots=3)
     assert ts_backend.calls[-1][0] == ('-G', '2', '-N', '3', 'echo', 'hello', 'world')
 
+    ts_backend.add('echo child', gpus=0, slots=1, depends_on=[1, 2])
+    assert ts_backend.calls[-1][0] == (
+        '-D', '1', '-D', '2', '-N', '1', 'echo', 'child')
+
     assert ts_backend.output({'id': 1, 'status': 'success'}, 2) == 'line2\nline3'
     ts_backend.output({'id': 1, 'status': 'running'}, 0, shell=True)
     assert ts_backend.calls[-1] == (('-c', '1'), True, True, False)

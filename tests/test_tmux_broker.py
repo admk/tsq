@@ -114,6 +114,42 @@ def test_broker_uses_runtime_slots_config(broker_args, fake_tmux, monkeypatch):
     assert read_meta(p2)['status'] == 'running'
 
 
+def test_broker_waits_for_successful_dependencies(
+    broker_args, fake_tmux, monkeypatch
+):
+    dep_path = write_meta(broker_args.state_dir, 1, status='queued')
+    child_path = write_meta(broker_args.state_dir, 2, depends_on=[1])
+    monkeypatch.setattr(broker, 'query_free_gpus', lambda args: [])
+
+    broker.tick(broker_args)
+
+    assert read_meta(child_path)['status'] == 'queued'
+
+    dep_meta = read_meta(dep_path)
+    dep_meta.update({'status': 'success', 'exitcode': 0})
+    dep_path.write_text(json.dumps(dep_meta), encoding='utf-8')
+
+    broker.tick(broker_args)
+
+    assert read_meta(child_path)['status'] == 'running'
+
+
+def test_broker_fails_job_when_dependency_fails(
+    broker_args, fake_tmux, monkeypatch
+):
+    write_meta(broker_args.state_dir, 1, status='failed', exitcode=1)
+    child_path = write_meta(broker_args.state_dir, 2, depends_on=[1])
+    monkeypatch.setattr(broker, 'query_free_gpus', lambda args: [])
+
+    broker.tick(broker_args)
+
+    child = read_meta(child_path)
+    assert child['status'] == 'failed'
+    assert child['exitcode'] is None
+    assert 'dependency 1 ended with status failed' in Path(
+        child['output_file']).read_text(encoding='utf-8')
+
+
 def test_broker_runtime_slots_caches_unchanged_config(broker_args, monkeypatch):
     config_path = Path(broker_args.state_dir) / 'broker.json'
     config_path.write_text(json.dumps({'slots': 3}), encoding='utf-8')

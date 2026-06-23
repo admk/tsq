@@ -9,6 +9,7 @@ import itertools
 
 from ..common import tqdm, STDIN_TTY, FilterArgs
 from .base import register_action, DryActionBase
+from .filter import parse_id_selector
 
 
 @register_action('add', 'add jobs', aliases=['a'])
@@ -23,6 +24,13 @@ class AddAction(DryActionBase):
             'type': int,
             'default': None,
             'help': 'Number of slots required.',
+        },
+        ('-D', '--depends-on'): {
+            'type': str,
+            'default': None,
+            'help': (
+                'Only start after these job IDs complete successfully. '
+                'Accepts comma-separated IDs and ranges, e.g. "1-3,5".'),
         },
         ('-u', '--unique'): {
             'action': 'store_true',
@@ -57,6 +65,14 @@ class AddAction(DryActionBase):
     def __init__(self, name, parser_kwargs):
         super().__init__(name, parser_kwargs)
         self.options.update(self.add_options)
+
+    def transform_args(self, args):
+        args = super().transform_args(args)
+        args.depends_on = (
+            parse_id_selector(args.depends_on)
+            if args.depends_on else []
+        )
+        return args
 
     @staticmethod
     def _extrapolate_inputs(command, from_file, sep=','):
@@ -175,11 +191,13 @@ class AddAction(DryActionBase):
         return argv
 
     @classmethod
-    def _dry_add_command(cls, command, gpus, slots):
+    def _dry_add_command(cls, command, gpus, slots, depends_on=None):
         argv = ['tq', 'add']
         if cls._include_gpus(gpus):
             argv += ['-G', str(gpus)]
         argv += ['-N', str(slots)]
+        if depends_on:
+            argv += ['-D', ','.join(str(i) for i in depends_on)]
         argv += cls._dry_command_argv(command)
         return shlex.join(argv)
 
@@ -210,7 +228,7 @@ class AddAction(DryActionBase):
         if not args.commit:
             gpus, slots = self._resolved_alloc(self.backend.config, args)
             dry_commands = [
-                self._dry_add_command(c, gpus, slots)
+                self._dry_add_command(c, gpus, slots, args.depends_on)
                 for c in commands
             ]
             print('\n'.join(dry_commands))
@@ -220,7 +238,10 @@ class AddAction(DryActionBase):
             return
         ids = []
         for c in tqdm(commands, desc='add'):
-            output = self.backend.add(c, args.gpus, args.slots)
+            output = self.backend.add(
+                c, args.gpus, args.slots,
+                depends_on=args.depends_on,
+            )
             ids.append(output)
         if any(ids):
             print('Added:', ', '.join(ids))

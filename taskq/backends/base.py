@@ -78,7 +78,7 @@ class BackendBase:
         raise NotImplementedError
 
     @abstractmethod
-    def add(self, command, gpus, slots):
+    def add(self, command, gpus, slots, depends_on=None):
         raise NotImplementedError
 
     @abstractmethod

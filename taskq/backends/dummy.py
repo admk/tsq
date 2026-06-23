@@ -33,8 +33,8 @@ class DummyBackend(BackendBase):
     def output(self, info, tail, shell=False):
         print(info, tail, shell)
 
-    def add(self, command, gpus, slots):
-        print(repr(command), gpus, slots)
+    def add(self, command, gpus, slots, depends_on=None):
+        print(repr(command), gpus, slots, depends_on)
         return 0
 
     def kill(self, info, commit=True):

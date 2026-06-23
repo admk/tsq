@@ -191,12 +191,13 @@ def test_tmux_ignores_configured_socket_path(monkeypatch, tmp_path):
 
 def test_tmux_add_queues_job_and_ensures_broker(tmux_backend):
     tmux_backend._nvidia_gpus_available = lambda: True
-    job_id = tmux_backend.add('echo hi', gpus=1, slots=2)
+    job_id = tmux_backend.add('echo hi', gpus=1, slots=2, depends_on=[3, 4])
     meta = read_meta(tmux_backend, int(job_id))
     assert meta['status'] == 'queued'
     assert meta['argv'] == ['echo', 'hi']
     assert meta['gpus_required'] == 1
     assert meta['slots_required'] == 2
+    assert meta['depends_on'] == [3, 4]
     assert meta['gpu_ids'] == ''
     wrapper = (tmux_backend._job_dir(int(job_id)) / 'run.sh').read_text()
     assert wrapper.startswith('#!/bin/sh\n')

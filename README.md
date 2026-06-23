@@ -49,6 +49,9 @@ tq add python train.py
 # Queue a command that needs 2 GPUs and 4 slots.
 tq add -G 2 -N 4 python train.py --epochs 10
 
+# Queue a command after jobs 1 and 2 finish successfully.
+tq add -D 1,2 python evaluate.py
+
 # List jobs. Running `tq` with no action is the same as `tq list`.
 tq
 tq list
@@ -230,6 +233,7 @@ to avoid accidental bulk changes.
 | `tq add CMD...` / `tq a CMD...` | Queue one command. |
 | `tq add -G N CMD...` | Require `N` GPUs. |
 | `tq add -N N CMD...` | Require `N` slots. |
+| `tq add -D IDS CMD...` | Only start after the selected jobs complete successfully. Accepts IDs and ranges like `1-3,5`. |
 | `tq add -u CMD...` | Queue only if the command is not already queued/known. |
 | `tq add -i CMD...` | Queue one command and attach when it starts. |
 | `tq add -f FILE` | Read one command per line from a file. |
