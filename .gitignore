@@ -1,4 +1,4 @@
-.tq.toml
+.tq/
 
 __pycache__/
 *.egg-info/

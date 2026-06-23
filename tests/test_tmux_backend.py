@@ -111,6 +111,30 @@ def test_tmux_config_appends_xdg_and_project_overrides(
     )
 
 
+def test_tmux_config_uses_parent_project_overrides(
+    monkeypatch, tmp_path, tmux_backend
+):
+    child = tmp_path / 'workspace' / 'nested'
+    child.mkdir(parents=True)
+    monkeypatch.chdir(child)
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'xdg'))
+    project_config = tmp_path / 'workspace' / '.tq' / 'tmux.conf'
+    project_config.parent.mkdir()
+    project_config.write_text('set -g status on\n', encoding='utf-8')
+
+    tmux_backend._source_tmux_config()
+
+    sourced = [
+        call[0][1]
+        for call in tmux_backend.calls
+        if call[0][:1] == ('source-file',)
+    ]
+    assert sourced == [
+        str(tmux_backend.tmux_default_config_file),
+        str(project_config),
+    ]
+
+
 def test_tmux_socket_path_uses_xdg_cache_home(monkeypatch, tmp_path):
     monkeypatch.setattr('taskq.backends.base.which', lambda command: command)
     monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))

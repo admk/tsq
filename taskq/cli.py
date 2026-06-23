@@ -23,7 +23,7 @@ class CLI:
                 'The configuration file to use. '
                 f'If not provided, it reads from '
                 f'$XDG_CONFIG_HOME/{TOOL_NAME}/config.toml '
-                f'and ./.{TOOL_NAME}/config.toml.'
+                f'and the nearest .{TOOL_NAME}/config.toml.'
         },
         ('-b', '--backend'): {
             'type': str,

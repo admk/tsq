@@ -52,6 +52,44 @@ def test_load_config_merges_xdg_and_project_config(tmp_path, monkeypatch):
     assert config['slots'] == 2
 
 
+def test_load_config_uses_parent_project_config(tmp_path, monkeypatch):
+    child = tmp_path / 'workspace' / 'nested'
+    child.mkdir(parents=True)
+    monkeypatch.chdir(child)
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'xdg'))
+    project_config = tmp_path / 'workspace' / '.tq' / 'config.toml'
+    project_config.parent.mkdir()
+    project_config.write_text(
+        'group = "parent"\n',
+        encoding='utf-8',
+    )
+    args = type('Args', (), {'rc_file': None})()
+
+    config = CLI()._load_config(args)
+
+    assert config['group'] == 'parent'
+    assert args.rc_file == str(project_config)
+
+
+def test_load_config_prefers_nearest_project_config(tmp_path, monkeypatch):
+    child = tmp_path / 'workspace' / 'nested'
+    child.mkdir(parents=True)
+    monkeypatch.chdir(child)
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'xdg'))
+    parent_config = tmp_path / 'workspace' / '.tq' / 'config.toml'
+    parent_config.parent.mkdir()
+    parent_config.write_text('group = "parent"\n', encoding='utf-8')
+    child_config = child / '.tq' / 'config.toml'
+    child_config.parent.mkdir()
+    child_config.write_text('group = "child"\n', encoding='utf-8')
+    args = type('Args', (), {'rc_file': None})()
+
+    config = CLI()._load_config(args)
+
+    assert config['group'] == 'child'
+    assert args.rc_file == str(child_config)
+
+
 def test_load_config_skips_user_config_when_xdg_config_home_unset(
     tmp_path, monkeypatch
 ):

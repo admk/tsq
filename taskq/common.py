@@ -39,7 +39,12 @@ def user_cache_dir(environ=None):
 
 
 def project_config_dir(root=None):
-    return Path(root or os.getcwd()) / f'.{TOOL_NAME}'
+    root = Path(root or os.getcwd()).resolve()
+    for path in (root, *root.parents):
+        config_dir = path / f'.{TOOL_NAME}'
+        if config_dir.is_dir():
+            return config_dir
+    return root / f'.{TOOL_NAME}'
 
 
 @dataclass

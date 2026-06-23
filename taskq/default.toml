@@ -1,7 +1,7 @@
 # taskq reads configuration in this order:
 # 1. Built-in defaults from this file.
 # 2. $XDG_CONFIG_HOME/tq/config.toml, when XDG_CONFIG_HOME is set.
-# 3. ./.tq/config.toml.
+# 3. The nearest .tq/config.toml in the current directory or a parent.
 # Later files override earlier settings. Passing -rc FILE reads only FILE.
 
 # Default backend. Supported values are:

@@ -96,7 +96,7 @@ FOO=bar tq add printenv FOO
 
 1. Built-in defaults.
 2. `$XDG_CONFIG_HOME/tq/config.toml`, or `~/.config/tq/config.toml` when `XDG_CONFIG_HOME` is unset.
-3. `./.tq/config.toml`.
+3. The nearest `.tq/config.toml` in the current directory or a parent.
 
 Later files override earlier settings.
 Use `-rc /path/to/tq.toml`
@@ -178,7 +178,9 @@ tq i 12
 The taskq tmux server starts with packaged taskq tmux defaults.
 It does not load your local `~/.tmux.conf`
 and sources tmux-specific customization
-from `$XDG_CONFIG_HOME/tq/tmux.conf` or `./.tq/tmux.conf`.
+from `$XDG_CONFIG_HOME/tq/tmux.conf`
+or the nearest `.tq/tmux.conf`
+in the current directory or a parent.
 
 GPU jobs are queued until enough GPUs appear free
 according to `nvidia-smi` and `gpu_free_perc`.
