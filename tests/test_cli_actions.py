@@ -187,6 +187,14 @@ def test_list_info_ids_commands_outputs_export(fake_backend, rc_file, capsys):
     assert 'python train.py' in out
 
 
+def test_commands_escapes_control_characters(fake_backend, rc_file, capsys):
+    fake_backend.jobs[0]['command'] = "echo 'a\nb'"
+
+    _, out = run_cli(['commands', '1'], rc_file, capsys)
+
+    assert out == "1: echo 'a\\nb'\n"
+
+
 def test_outputs_follow_requires_single_job(
     fake_backend, rc_file, tmp_path, capsys
 ):

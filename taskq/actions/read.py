@@ -202,6 +202,16 @@ class InfoAction(ReadActionBase):
 
 @register_action('commands', 'show job commands', aliases=['cmd', 'c'])
 class CommandsAction(ReadActionBase):
+    command_escapes = {
+        '\\': '\\\\',
+        '\b': '\\b',
+        '\f': '\\f',
+        '\n': '\\n',
+        '\r': '\\r',
+        '\t': '\\t',
+        '\v': '\\v',
+    }
+
     commands_options = {
         ('-j', '--no-job-ids'): {
             'action': 'store_true',
@@ -213,15 +223,34 @@ class CommandsAction(ReadActionBase):
         super().__init__(name, parser_kwargs)
         self.options.update(self.commands_options)
 
+    @classmethod
+    def escape_command(cls, command):
+        output = []
+        for char in command:
+            if char in cls.command_escapes:
+                output.append(cls.command_escapes[char])
+            elif char.isprintable():
+                output.append(char)
+            else:
+                codepoint = ord(char)
+                if codepoint <= 0xff:
+                    output.append(f'\\x{codepoint:02x}')
+                elif codepoint <= 0xffff:
+                    output.append(f'\\u{codepoint:04x}')
+                else:
+                    output.append(f'\\U{codepoint:08x}')
+        return ''.join(output)
+
     def format(self, args, tqdm_disable=False):
         info = self.backend.full_info(
             self.ids, self.filters, tqdm_disable=tqdm_disable)
         outputs = []
         for i in info:
+            command = self.escape_command(i['command'])
             if args.no_job_ids:
-                outputs.append(i['command'])
+                outputs.append(command)
             else:
-                outputs.append(f"{i['id']}: {i['command']}")
+                outputs.append(f"{i['id']}: {command}")
         return '\n'.join(outputs)
 
 
