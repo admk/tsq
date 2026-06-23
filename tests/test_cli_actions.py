@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from taskq import TOOL_NAME
 from taskq.actions.add import AddAction
 from taskq.actions.filter import FilterActionBase
 from taskq.cli import CLI
@@ -86,18 +87,18 @@ def test_add_interactive_multiple_rejected(fake_backend, rc_file, tmp_path, caps
 
 def test_add_dry_run(fake_backend, rc_file, capsys):
     _, out = run_cli(['add', '-d', 'echo', 'hi'], rc_file, capsys)
-    assert out.strip() == 'tq add -N 1 echo hi'
+    assert out.strip() == f'{TOOL_NAME} add -N 1 echo hi'
     assert not [
         call for call in fake_backend.instances[-1].calls
         if call[0] == 'add'
     ]
 
     _, out = run_cli(['add', '-d', '-G', '2', '-N', '3', 'echo', '@u'], rc_file, capsys)
-    assert out.strip().startswith('tq add -G 2 -N 3 echo ')
+    assert out.strip().startswith(f'{TOOL_NAME} add -G 2 -N 3 echo ')
     assert '@u' not in out
 
     _, out = run_cli(['add', '-d', '-D', '1-3,5', 'echo', 'hi'], rc_file, capsys)
-    assert out.strip() == 'tq add -N 1 -D 1,2,3,5 echo hi'
+    assert out.strip() == f'{TOOL_NAME} add -N 1 -D 1,2,3,5 echo hi'
 
 
 def test_add_invalid_dependency_id_prints_cli_error(fake_backend, rc_file, capsys):
@@ -105,7 +106,7 @@ def test_add_invalid_dependency_id_prints_cli_error(fake_backend, rc_file, capsy
     captured = capsys.readouterr()
 
     assert code == 2
-    assert "tq: error: invalid job ID 'x'" in captured.err
+    assert f"{TOOL_NAME}: error: invalid job ID 'x'" in captured.err
     assert 'Traceback' not in captured.err
 
 
@@ -141,7 +142,7 @@ def test_invalid_default_id_prints_cli_error(fake_backend, rc_file, capsys):
     captured = capsys.readouterr()
 
     assert code == 2
-    assert "tq: error: invalid job ID 'hello'" in captured.err
+    assert f"{TOOL_NAME}: error: invalid job ID 'hello'" in captured.err
     assert 'Traceback' not in captured.err
 
 

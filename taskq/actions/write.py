@@ -1,5 +1,6 @@
 import sys
 
+from .. import TOOL_NAME
 from ..common import tqdm
 from .base import register_action, DryActionBase
 from .filter import FilterActionBase
@@ -12,7 +13,7 @@ class WriteActionBase(FilterActionBase, DryActionBase):
         args = FilterActionBase.transform_args(self, args)
         if not self.has_filters:
             print(
-                'tq: flags or ids must be specified '
+                f'{TOOL_NAME}: flags or ids must be specified '
                 f'for dangerous action {self.name!r}.')
             sys.exit(1)
         return args

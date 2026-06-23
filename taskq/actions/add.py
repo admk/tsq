@@ -7,6 +7,7 @@ import textwrap
 import argparse
 import itertools
 
+from .. import TOOL_NAME
 from ..common import tqdm, STDIN_TTY, FilterArgs
 from .base import register_action, DryActionBase
 from .filter import parse_id_selector
@@ -192,7 +193,7 @@ class AddAction(DryActionBase):
 
     @classmethod
     def _dry_add_command(cls, command, gpus, slots, depends_on=None):
-        argv = ['tq', 'add']
+        argv = [TOOL_NAME, 'add']
         if cls._include_gpus(gpus):
             argv += ['-G', str(gpus)]
         argv += ['-N', str(slots)]

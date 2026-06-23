@@ -2,6 +2,7 @@ import sys
 from abc import abstractmethod
 from typing import Mapping, Type
 
+from .. import TOOL_NAME
 from ..backends import BACKENDS, BackendNotFoundError
 
 
@@ -27,7 +28,7 @@ class ActionBase:
         try:
             args = self.transform_args(args)
         except CLIError as e:
-            print(f'tq: error: {e}', file=sys.stderr)
+            print(f'{TOOL_NAME}: error: {e}', file=sys.stderr)
             return 2
         backend = config['backend']
         try:

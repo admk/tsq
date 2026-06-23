@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from taskq import TOOL_NAME
 from taskq.cli import CLI
 
 
@@ -33,8 +34,8 @@ def live_tmux(tmp_path, monkeypatch):
     cache_home = Path('/tmp') / f'tq-cache-{unique}'
     monkeypatch.setenv('XDG_CACHE_HOME', str(cache_home))
     socket = f'live-{unique}'
-    socket_path = cache_home / 'tq' / f'{socket}.sock'
-    state_dir = cache_home / 'tq'
+    socket_path = cache_home / TOOL_NAME / f'{socket}.sock'
+    state_dir = cache_home / TOOL_NAME
     rc_file = tmp_path / 'tq.toml'
     group = f'live-{unique}'
 

@@ -4,6 +4,7 @@ import sys
 from argparse import Namespace
 from pathlib import Path
 
+from taskq import TOOL_NAME
 from taskq.backends.tmux import broker
 from taskq.cli import CLI
 
@@ -144,7 +145,7 @@ def test_tq_add_tmux_uses_shell_agnostic_broker_command(
     monkeypatch.setattr('taskq.actions.add.STDIN_TTY', True)
     fake_tmux_state = install_fake_tmux(tmp_path, monkeypatch)
     rc_file = tmp_path / 'tq.toml'
-    state_root = tmp_path / 'cache' / 'tq'
+    state_root = tmp_path / 'cache' / TOOL_NAME
     monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
     socket_path = state_root / 'fake-socket.sock'
     write_tmux_rc(rc_file)
@@ -210,13 +211,13 @@ def test_tq_add_dry_run_prints_command_without_backend_details(
     monkeypatch.setattr('taskq.actions.add.STDIN_TTY', True)
     fake_tmux_state = install_fake_tmux(tmp_path, monkeypatch)
     rc_file = tmp_path / 'tq.toml'
-    state_root = tmp_path / 'cache' / 'tq'
+    state_root = tmp_path / 'cache' / TOOL_NAME
     monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
     write_tmux_rc(rc_file)
 
     code, out = run_cli(['add', '-d', 'sleep 1'], rc_file, capsys)
 
     assert code is None
-    assert out.strip() == 'tq add -N 1 sleep 1'
+    assert out.strip() == f'{TOOL_NAME} add -N 1 sleep 1'
     assert not fake_tmux_state.exists()
     assert not state_root.exists()

@@ -3,6 +3,7 @@ import subprocess
 
 import pytest
 
+from taskq import TOOL_NAME
 from taskq.backends import BACKENDS
 from taskq.backends.tmux.backend import TmuxBackend
 from taskq.common import FilterArgs
@@ -86,10 +87,10 @@ def test_tmux_config_appends_xdg_and_project_overrides(
 ):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'xdg'))
-    user_config = tmp_path / 'xdg' / 'tq' / 'tmux.conf'
+    user_config = tmp_path / 'xdg' / TOOL_NAME / 'tmux.conf'
     user_config.parent.mkdir(parents=True)
     user_config.write_text('set -g mouse on\n', encoding='utf-8')
-    project_config = tmp_path / '.tq' / 'tmux.conf'
+    project_config = tmp_path / f'.{TOOL_NAME}' / 'tmux.conf'
     project_config.parent.mkdir()
     project_config.write_text('set -g status on\n', encoding='utf-8')
 
@@ -118,7 +119,9 @@ def test_tmux_config_uses_parent_project_overrides(
     child.mkdir(parents=True)
     monkeypatch.chdir(child)
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'xdg'))
-    project_config = tmp_path / 'workspace' / '.tq' / 'tmux.conf'
+    project_config = (
+        tmp_path / 'workspace' / f'.{TOOL_NAME}' / 'tmux.conf'
+    )
     project_config.parent.mkdir()
     project_config.write_text('set -g status on\n', encoding='utf-8')
 
@@ -146,7 +149,7 @@ def test_tmux_socket_path_uses_xdg_cache_home(monkeypatch, tmp_path):
             'alloc': {}, 'env': {},
         },
     )
-    socket_path = tmp_path / 'cache' / 'tq' / 'sock.sock'
+    socket_path = tmp_path / 'cache' / TOOL_NAME / 'sock.sock'
     assert backend.socket_path == str(socket_path)
     assert backend._tmux_cmd('ls') == [
         'tmux', '-f', str(backend.tmux_default_config_file),
@@ -164,7 +167,9 @@ def test_tmux_state_dir_uses_xdg_cache_home(monkeypatch, tmp_path):
             'socket': 'sock', 'slots': 1, 'alloc': {}, 'env': {},
         },
     )
-    assert backend.state_dir == tmp_path / 'cache' / 'tq' / 'sock' / 'g'
+    assert backend.state_dir == (
+        tmp_path / 'cache' / TOOL_NAME / 'sock' / 'g'
+    )
 
 
 def test_tmux_state_dir_falls_back_to_home_cache(monkeypatch, tmp_path):
@@ -179,7 +184,7 @@ def test_tmux_state_dir_falls_back_to_home_cache(monkeypatch, tmp_path):
         },
     )
     assert backend.state_dir == (
-        tmp_path / 'home' / '.cache' / 'tq' / 'sock' / 'g'
+        tmp_path / 'home' / '.cache' / TOOL_NAME / 'sock' / 'g'
     )
 
 
@@ -195,7 +200,9 @@ def test_tmux_ignores_configured_state_dir(monkeypatch, tmp_path):
         },
     )
     assert 'state_dir' not in backend.config
-    assert backend.state_dir == tmp_path / 'cache' / 'tq' / 'sock' / 'g'
+    assert backend.state_dir == (
+        tmp_path / 'cache' / TOOL_NAME / 'sock' / 'g'
+    )
 
 
 def test_tmux_ignores_configured_socket_path(monkeypatch, tmp_path):
@@ -210,7 +217,9 @@ def test_tmux_ignores_configured_socket_path(monkeypatch, tmp_path):
         },
     )
     assert 'socket_path' not in backend.config
-    assert backend.socket_path == str(tmp_path / 'cache' / 'tq' / 'sock.sock')
+    assert backend.socket_path == str(
+        tmp_path / 'cache' / TOOL_NAME / 'sock.sock'
+    )
 
 
 def test_tmux_add_queues_job_and_ensures_broker(tmux_backend):
