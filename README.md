@@ -92,8 +92,8 @@ FOO=bar tq add printenv FOO
 `tq` reads TOML configuration in this order:
 
 1. Built-in defaults.
-2. `~/.config/tq.toml`.
-3. `./.tq.toml`.
+2. `$XDG_CONFIG_HOME/tq/config.toml`, or `~/.config/tq/config.toml` when `XDG_CONFIG_HOME` is unset.
+3. `./.tq/config.toml`.
 
 Later files override earlier settings.
 Use `-rc /path/to/tq.toml`
@@ -116,7 +116,6 @@ OMP_NUM_THREADS = "1"
 
 [backends.tmux]
 command = "tmux"
-state_dir = "~/.cache/taskq"
 history_limit = 100000
 broker_interval = 1
 gpu_free_perc = 90
@@ -139,12 +138,10 @@ Useful config keys:
 | `backend` | Default backend: `tmux`, `ts`, or `dummy`. |
 | `group` | Default queue group. Groups isolate queues and can override settings. |
 | `slots` | Queue capacity. `"auto"` uses GPU count when `nvidia-smi` is available, otherwise `1`. |
-| `socket` | Shared backend socket name. For tmux this becomes the tmux socket name unless `socket_path` is set. |
+| `socket` | Shared backend socket name. For tmux this selects the socket file under the taskq cache directory. |
 | `[alloc].gpus` | Default GPUs required per new job. |
 | `[alloc].slots` | Default slots required per new job. |
 | `[env]` | Environment variables exported into jobs. |
-| `[backends.tmux].state_dir` | Cache directory for metadata, wrappers, logs, and generated tmux config. |
-| `[backends.tmux].socket_path` | Optional explicit tmux socket path. |
 | `[backends.tmux].gpu_free_perc` | GPU memory-free threshold used by the tmux broker when allocating GPUs. |
 | `[groups.<name>]` | Per-group overrides. Use `tq -g <name> ...` to select a group. |
 
@@ -163,7 +160,8 @@ tq config alloc.gpus null
 ### tmux
 
 The tmux backend stores
-queued job metadata under `state_dir`,
+queued job metadata under `$XDG_CACHE_HOME/tq`,
+or `~/.cache/tq` when `XDG_CACHE_HOME` is unset,
 starts a broker session if needed,
 and uses a shared tmux socket
 for broker and job sessions.
@@ -174,10 +172,10 @@ You can attach to a running job:
 tq i 12
 ```
 
-The taskq tmux server uses a generated taskq tmux config.
+The taskq tmux server starts with packaged taskq tmux defaults.
 It does not load your local `~/.tmux.conf`
-and uses taskq-owned settings
-so local tmux customizations do not affect jobs.
+and sources tmux-specific customization
+from `$XDG_CONFIG_HOME/tq/tmux.conf` or `./.tq/tmux.conf`.
 
 GPU jobs are queued until enough GPUs appear free
 according to `nvidia-smi` and `gpu_free_perc`.

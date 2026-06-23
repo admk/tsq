@@ -29,11 +29,14 @@ def live_tmux(tmp_path, monkeypatch):
     if not tmux:
         pytest.skip('tmux is not installed')
     monkeypatch.setattr('taskq.actions.add.STDIN_TTY', True)
-    socket_path = tmp_path / 'tmux.sock'
-    state_dir = tmp_path / 'state'
-    tmux_config = tmp_path / 'tmux.conf'
+    unique = uuid.uuid4().hex[:8]
+    cache_home = Path('/tmp') / f'tq-cache-{unique}'
+    monkeypatch.setenv('XDG_CACHE_HOME', str(cache_home))
+    socket = f'live-{unique}'
+    socket_path = cache_home / 'tq' / f'{socket}.sock'
+    state_dir = cache_home / 'tq'
     rc_file = tmp_path / 'tq.toml'
-    group = f'live-{uuid.uuid4().hex[:8]}'
+    group = f'live-{unique}'
 
     def q(value):
         return json.dumps(str(value))
@@ -42,6 +45,7 @@ def live_tmux(tmp_path, monkeypatch):
         '\n'.join([
             'backend = "tmux"',
             f'group = "{group}"',
+            f'socket = "{socket}"',
             'slots = 1',
             '',
             '[alloc]',
@@ -52,9 +56,6 @@ def live_tmux(tmp_path, monkeypatch):
             '',
             '[backends.tmux]',
             f'command = {q(tmux)}',
-            f'socket_path = {q(socket_path)}',
-            f'state_dir = {q(state_dir)}',
-            f'tmux_config = {q(tmux_config)}',
             'broker_interval = 0.05',
             'history_limit = 1000',
             'gpu_free_perc = 90',
@@ -76,6 +77,7 @@ def live_tmux(tmp_path, monkeypatch):
             stderr=subprocess.DEVNULL,
             check=False,
         )
+        shutil.rmtree(cache_home, ignore_errors=True)
 
 
 def meta_path(state_dir, job_id):

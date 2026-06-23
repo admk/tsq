@@ -1,12 +1,11 @@
-import os
 import sys
 import argparse
 from importlib import resources
 
 import tomlkit
 
-from . import __version__
-from .common import dict_merge
+from . import TOOL_NAME, __version__
+from .common import dict_merge, project_config_dir, user_config_dir
 from .actions import INFO
 from .backends import BACKENDS
 
@@ -22,8 +21,9 @@ class CLI:
             'default': None,
             'help':
                 'The configuration file to use. '
-                'If not provided, it reads from "~/.config/tq.toml" '
-                'and "./.tq.toml".'
+                f'If not provided, it reads from '
+                f'$XDG_CONFIG_HOME/{TOOL_NAME}/config.toml '
+                f'and ./.{TOOL_NAME}/config.toml.'
         },
         ('-b', '--backend'): {
             'type': str,
@@ -37,7 +37,7 @@ class CLI:
             'help': 'The group to use.',
         },
     }
-    rc_path = '.tq.toml'
+    rc_path = f'.{TOOL_NAME}/config.toml'
     default_config = 'default.toml'
 
     def __init__(self):
@@ -68,15 +68,16 @@ class CLI:
                 except tomlkit.exceptions.ParseError as e:
                     print(f'Error parsing {args.rc_file}: {e}')
                     return config
-        else:
-            args.rc_file = self.rc_path
-        rc_files = [
-            '~/.config/tq.toml',
-            self.rc_path,
-        ]
+        project_path = project_config_dir() / 'config.toml'
+        args.rc_file = str(project_path)
+        rc_files = []
+        config_dir = user_config_dir()
+        if config_dir:
+            rc_files.append(config_dir / 'config.toml')
+        rc_files.append(project_path)
         for path in rc_files:
             try:
-                with open(os.path.expanduser(path), 'r', encoding='utf-8') as f:
+                with open(path, 'r', encoding='utf-8') as f:
                     try:
                         rc = tomlkit.load(f)
                     except tomlkit.exceptions.ParseError as e:

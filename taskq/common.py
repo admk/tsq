@@ -1,8 +1,11 @@
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 from tqdm import tqdm as tqdm_
+
+from . import TOOL_NAME
 
 
 def tqdm(*args, disable=None, **kwargs):
@@ -10,6 +13,33 @@ def tqdm(*args, disable=None, **kwargs):
 
 
 STATUSES = ['running', 'queued', 'success', 'failed', 'killed', 'interrupted']
+
+
+def xdg_config_home(environ=None):
+    if environ is None:
+        environ = os.environ
+    value = environ.get('XDG_CONFIG_HOME')
+    return Path(os.path.expanduser(value)) if value else None
+
+
+def user_config_dir(environ=None):
+    config_home = xdg_config_home(environ)
+    return config_home / TOOL_NAME if config_home else None
+
+
+def xdg_cache_home(environ=None):
+    if environ is None:
+        environ = os.environ
+    return Path(os.path.expanduser(environ.get('XDG_CACHE_HOME') or '~/.cache'))
+
+
+def user_cache_dir(environ=None):
+    cache_home = xdg_cache_home(environ)
+    return cache_home / TOOL_NAME if cache_home else None
+
+
+def project_config_dir(root=None):
+    return Path(root or os.getcwd()) / f'.{TOOL_NAME}'
 
 
 @dataclass

@@ -42,7 +42,7 @@ include = ["taskq", "taskq.*"]
 
 [tool.setuptools.package-data]
 "taskq" = ["default.toml"]
-"taskq.backends.tmux" = ["wrapper.sh"]
+"taskq.backends.tmux" = ["wrapper.sh", "default.conf"]
 
 [tool.setuptools.dynamic]
 version = {attr = "taskq.__version__"}

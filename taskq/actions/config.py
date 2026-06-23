@@ -1,4 +1,6 @@
 import copy
+from pathlib import Path
+
 import tomlkit
 
 from ..common import dict_simplify
@@ -53,5 +55,6 @@ class ConfigAction(ActionBase):
         except FileNotFoundError:
             rc_config = {}
         self.getset(rc_config, args.key, args.value)
+        Path(args.rc_file).parent.mkdir(parents=True, exist_ok=True)
         with open(args.rc_file, 'w', encoding='utf-8') as f:
             f.write(tomlkit.dumps(rc_config))

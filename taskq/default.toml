@@ -1,7 +1,7 @@
 # taskq reads configuration in this order:
 # 1. Built-in defaults from this file.
-# 2. ~/.config/tq.toml.
-# 3. ./.tq.toml.
+# 2. $XDG_CONFIG_HOME/tq/config.toml, when XDG_CONFIG_HOME is set.
+# 3. ./.tq/config.toml.
 # Later files override earlier settings. Passing -rc FILE reads only FILE.
 
 # Default backend. Supported values are:
@@ -20,7 +20,7 @@ slots = "auto"
 
 # Shared backend socket name. For tmux this is passed as `tmux -L socket`;
 # for Task Spooler this becomes /tmp/ts-{socket}.sock unless TS_SOCKET is set
-# in [env]. The tmux backend ignores this when socket_path is configured.
+# in [env].
 socket = "taskq"
 
 # Default resource request for newly added jobs. CLI flags override these:
@@ -41,8 +41,8 @@ slots = 1
 # CUDA_DEVICE_ORDER = "PCI_BUS_ID"
 
 # Per-group overrides. A group table is merged after the selected backend table.
-# Useful group keys include slots, socket, visible_gpus, alloc, env, state_dir,
-# history_limit, broker_interval, gpu_free_perc, tmux_config, and socket_path.
+# Useful group keys include slots, socket, visible_gpus, alloc, env,
+# history_limit, broker_interval, and gpu_free_perc.
 #
 # Note: backend and group selection happens before group overrides are merged,
 # so a group table should not be used to choose the active backend or group.
@@ -65,12 +65,7 @@ slots = 1
 # tmux executable name or absolute path.
 command = "tmux"
 
-# Root directory for task metadata, wrappers, logs, generated tmux config, and
-# broker runtime files. The actual queue state lives below:
-# {state_dir}/{sanitized socket or socket_path}/{group}/
-state_dir = "~/.cache/taskq"
-
-# tmux scrollback history limit for generated taskq tmux config and job panes.
+# tmux scrollback history limit for taskq tmux server and job panes.
 history_limit = 100000
 
 # Broker polling interval in seconds. May be an integer or float.
@@ -83,16 +78,6 @@ gpu_free_perc = 90
 # Optional explicit GPU allowlist for the tmux broker. If unset, taskq uses
 # TS_VISIBLE_DEVICES from [env] or the process environment when present.
 # visible_gpus = "0,1"
-
-# Optional explicit tmux socket path. When set, taskq passes `tmux -S PATH`
-# instead of `tmux -L socket`.
-# socket_path = "~/.cache/taskq/tmux.sock"
-
-# Optional generated tmux config path. By default, taskq writes tmux.conf inside
-# the resolved queue state directory. `config_file` is accepted as an older
-# alias, but tmux_config takes precedence when both are set.
-# tmux_config = "~/.cache/taskq/tmux.conf"
-# config_file = "~/.cache/taskq/tmux.conf"
 
 [backends.ts]
 

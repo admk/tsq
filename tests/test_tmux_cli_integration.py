@@ -113,10 +113,7 @@ def read_fake_tmux_calls(state_path):
     return json.loads(state_path.read_text(encoding='utf-8'))['calls']
 
 
-def write_tmux_rc(rc_file, state_dir, tmux_config):
-    def q(value):
-        return json.dumps(str(value))
-
+def write_tmux_rc(rc_file):
     rc_file.write_text(
         '\n'.join([
             'backend = "tmux"',
@@ -132,8 +129,6 @@ def write_tmux_rc(rc_file, state_dir, tmux_config):
             '',
             '[backends.tmux]',
             'command = "tmux"',
-            f'state_dir = {q(state_dir)}',
-            f'tmux_config = {q(tmux_config)}',
             'broker_interval = 0.1',
             'history_limit = 1000',
             'gpu_free_perc = 90',
@@ -149,9 +144,10 @@ def test_tq_add_tmux_uses_shell_agnostic_broker_command(
     monkeypatch.setattr('taskq.actions.add.STDIN_TTY', True)
     fake_tmux_state = install_fake_tmux(tmp_path, monkeypatch)
     rc_file = tmp_path / 'tq.toml'
-    state_root = tmp_path / 'state'
-    tmux_config = tmp_path / 'tmux.conf'
-    write_tmux_rc(rc_file, state_root, tmux_config)
+    state_root = tmp_path / 'cache' / 'tq'
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    socket_path = state_root / 'fake-socket.sock'
+    write_tmux_rc(rc_file)
 
     code, out = run_cli(['add', 'sleep', '10'], rc_file, capsys)
     assert code is None
@@ -164,24 +160,26 @@ def test_tq_add_tmux_uses_shell_agnostic_broker_command(
     assert meta['argv'] == ['sleep', '10']
 
     calls = read_fake_tmux_calls(fake_tmux_state)
-    assert all('-L' in call and 'fake-socket' in call for call in calls)
-    assert all('-f' in call and str(tmux_config) in call for call in calls)
+    assert all('-S' in call and str(socket_path) in call for call in calls)
+    assert all('-f' in call and call[call.index('-f') + 1].endswith(
+        'taskq/backends/tmux/default.conf'
+    ) for call in calls)
     broker_call = next(
         call for call in calls
         if 'new-session' in call and meta['session'].rsplit('-', 1)[0] + '-broker' in call
     )
     broker_command = broker_call[-1]
     assert 'taskq.backends.tmux.broker' in broker_command
-    assert '--socket fake-socket' in broker_command
-    assert f'--config-file {tmux_config}' in broker_command
+    assert f'--socket-path {socket_path}' in broker_command
+    assert '--config-file' not in broker_command
 
     broker.tick(Namespace(
         state_dir=str(meta_path.parents[2]),
         prefix=meta['session'].rsplit('-', 1)[0],
         command='tmux',
-        config_file=str(tmux_config),
+        config_file=None,
         socket='fake-socket',
-        socket_path=None,
+        socket_path=str(socket_path),
         slots=2,
         history_limit=1000,
         interval=0.1,
@@ -212,9 +210,9 @@ def test_tq_add_dry_run_prints_command_without_backend_details(
     monkeypatch.setattr('taskq.actions.add.STDIN_TTY', True)
     fake_tmux_state = install_fake_tmux(tmp_path, monkeypatch)
     rc_file = tmp_path / 'tq.toml'
-    state_root = tmp_path / 'state'
-    tmux_config = tmp_path / 'tmux.conf'
-    write_tmux_rc(rc_file, state_root, tmux_config)
+    state_root = tmp_path / 'cache' / 'tq'
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    write_tmux_rc(rc_file)
 
     code, out = run_cli(['add', '-d', 'sleep 1'], rc_file, capsys)
 
