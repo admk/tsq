@@ -200,7 +200,7 @@ class InfoAction(ReadActionBase):
         return '\n'.join(outputs)
 
 
-@register_action('commands', 'show job commands', aliases=['cmd'])
+@register_action('commands', 'show job commands', aliases=['cmd', 'c'])
 class CommandsAction(ReadActionBase):
     commands_options = {
         ('-j', '--no-job-ids'): {
@@ -270,7 +270,7 @@ class ExportAction(ReadActionBase):
             raise ValueError(f'Unknown format: {args.export_format}')
 
 
-@register_action('outputs', 'show job outputs', aliases=['out'])
+@register_action('outputs', 'show job outputs', aliases=['o'])
 class OutputsAction(ReadActionBase):
     outputs_options = {
         ('-F', '--follow'): {

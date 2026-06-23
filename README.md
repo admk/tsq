@@ -265,9 +265,9 @@ Expansion helpers:
 | `tq list -t FORMAT` | Set the `tabulate` table format. |
 | `tq ids` / `tq id` | Print matching job IDs. |
 | `tq info ID` | Show full metadata for a job. |
-| `tq commands` / `tq cmd` | Show job commands with IDs. |
+| `tq commands` / `tq cmd` / `tq c` | Show job commands with IDs. |
 | `tq commands -j` | Show commands without job IDs. |
-| `tq outputs ID` / `tq out ID` | Show output for jobs. |
+| `tq outputs ID` / `tq o ID` | Show output for jobs. |
 | `tq outputs -t N ID` | Show the last `N` output lines. |
 | `tq outputs -R ID` | Print raw output without `>` formatting. |
 | `tq outputs -I ID` | Attach/follow interactively when supported. |
@@ -303,7 +303,7 @@ are `id`, `status`, `slots`, `gpus`, `gpu_ids`, `enqueue`,
 | `tq backend info` / `tq b info` | Show active backend details. |
 | `tq backend command ARGS...` | Run a backend-specific command. For tmux this runs `tmux` with taskq socket/config args. |
 | `tq backend reset` | Remove all known jobs and kill backend sessions/processes. |
-| `tq config` / `tq c` | Print resolved config. |
+| `tq config` | Print resolved config. |
 | `tq config KEY` | Print one config key. |
 | `tq config KEY VALUE` | Set a config key in the active rc file. |
 | `tq config KEY null` | Delete a config key from the active rc file. |

@@ -167,7 +167,13 @@ def test_list_info_ids_commands_outputs_export(fake_backend, rc_file, capsys):
     _, out = run_cli(['commands', '-j'], rc_file, capsys)
     assert 'python train.py' in out
 
+    _, out = run_cli(['c', '-j'], rc_file, capsys)
+    assert 'python train.py' in out
+
     _, out = run_cli(['outputs', '-R', '1'], rc_file, capsys)
+    assert 'output-1' in out
+
+    _, out = run_cli(['o', '-R', '1'], rc_file, capsys)
     assert 'output-1' in out
 
     _, out = run_cli(['export', '-e', 'json', '-t', '1', '1'], rc_file, capsys)

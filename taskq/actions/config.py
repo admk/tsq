@@ -7,7 +7,7 @@ from ..common import dict_simplify
 from .base import register_action, ActionBase
 
 
-@register_action('config', 'config action', aliases=['c'])
+@register_action('config', 'config action')
 class ConfigAction(ActionBase):
     config_options = {
         ('key', ): {
