@@ -21,7 +21,7 @@ class TaskSpoolerBackend(BackendBase):
         slot_keys = [
             'slots',
             f'backends.{self.name}.slots',
-            f'groups.{self.config["group"]}.slots'
+            f'queues.{self.config["queue"]}.slots'
         ]
         if key in slot_keys:
             if value is None:

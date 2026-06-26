@@ -22,7 +22,7 @@ def tmux_backend(monkeypatch, tmp_path):
         'tmux',
         {
             'backend': 'tmux',
-            'group': 'test',
+            'queue': 'test',
             'command': 'tmux',
             'socket': 'shared',
             'slots': 2,
@@ -169,7 +169,7 @@ def test_tmux_socket_path_uses_xdg_cache_home(monkeypatch, tmp_path):
     backend = TmuxBackend(
         'tmux',
         {
-            'backend': 'tmux', 'group': 'g', 'command': 'tmux',
+            'backend': 'tmux', 'queue': 'g', 'command': 'tmux',
             'socket': 'sock', 'slots': 1,
             'alloc': {}, 'env': {},
         },
@@ -188,7 +188,7 @@ def test_tmux_state_dir_uses_xdg_cache_home(monkeypatch, tmp_path):
     backend = TmuxBackend(
         'tmux',
         {
-            'backend': 'tmux', 'group': 'g', 'command': 'tmux',
+            'backend': 'tmux', 'queue': 'g', 'command': 'tmux',
             'socket': 'sock', 'slots': 1, 'alloc': {}, 'env': {},
         },
     )
@@ -204,7 +204,7 @@ def test_tmux_state_dir_falls_back_to_home_cache(monkeypatch, tmp_path):
     backend = TmuxBackend(
         'tmux',
         {
-            'backend': 'tmux', 'group': 'g', 'command': 'tmux',
+            'backend': 'tmux', 'queue': 'g', 'command': 'tmux',
             'socket': 'sock', 'slots': 1, 'alloc': {}, 'env': {},
         },
     )
@@ -219,7 +219,7 @@ def test_tmux_ignores_configured_state_dir(monkeypatch, tmp_path):
     backend = TmuxBackend(
         'tmux',
         {
-            'backend': 'tmux', 'group': 'g', 'command': 'tmux',
+            'backend': 'tmux', 'queue': 'g', 'command': 'tmux',
             'socket': 'sock', 'slots': 1, 'alloc': {}, 'env': {},
             'state_dir': str(tmp_path / 'ignored'),
         },
@@ -236,7 +236,7 @@ def test_tmux_ignores_configured_socket_path(monkeypatch, tmp_path):
     backend = TmuxBackend(
         'tmux',
         {
-            'backend': 'tmux', 'group': 'g', 'command': 'tmux',
+            'backend': 'tmux', 'queue': 'g', 'command': 'tmux',
             'socket': 'sock', 'socket_path': str(tmp_path / 'ignored.sock'),
             'slots': 1, 'alloc': {}, 'env': {},
         },

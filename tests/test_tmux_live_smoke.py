@@ -37,7 +37,7 @@ def live_tmux(tmp_path, monkeypatch):
     socket_path = cache_home / TOOL_NAME / f'{socket}.sock'
     state_dir = cache_home / TOOL_NAME
     rc_file = tmp_path / 'tq.toml'
-    group = f'live-{unique}'
+    queue = f'live-{unique}'
 
     def q(value):
         return json.dumps(str(value))
@@ -45,7 +45,7 @@ def live_tmux(tmp_path, monkeypatch):
     rc_file.write_text(
         '\n'.join([
             'backend = "tmux"',
-            f'group = "{group}"',
+            f'queue = "{queue}"',
             f'socket = "{socket}"',
             'slots = 1',
             '',

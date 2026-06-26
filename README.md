@@ -124,7 +124,7 @@ Example config:
 
 ```toml
 backend = "tmux"
-group = "default"
+queue = "default"
 slots = "auto"
 socket = "taskq"
 
@@ -144,10 +144,10 @@ gpu_free_perc = 90
 [backends.ts]
 command = "ts"
 
-[groups.gpu]
+[queues.gpu]
 slots = 4
 
-[groups.gpu.alloc]
+[queues.gpu.alloc]
 gpus = 1
 slots = 1
 ```
@@ -157,14 +157,14 @@ Useful config keys:
 | Key | Meaning |
 | --- | --- |
 | `backend` | Default backend: `tmux`, `ts`, or `dummy`. |
-| `group` | Default queue group. Groups isolate queues and can override settings. |
+| `queue` | Default queue. Queues isolate state and can override settings. |
 | `slots` | Queue capacity. `"auto"` uses GPU count when `nvidia-smi` is available, otherwise `1`. |
 | `socket` | Shared backend socket name. For tmux this selects the socket file under the taskq cache directory. |
 | `[alloc].gpus` | Default GPUs required per new job. |
 | `[alloc].slots` | Default slots required per new job. |
 | `[env]` | Environment variables exported into jobs. |
 | `[backends.tmux].gpu_free_perc` | GPU memory-free threshold used by the tmux broker when allocating GPUs. |
-| `[groups.<name>]` | Per-group overrides. Use `tq -g <name> ...` to select a group. |
+| `[queues.<name>]` | Per-queue overrides. Use `tq -Q <name> ...` to select a queue. |
 
 Inspect or edit configuration with:
 
@@ -221,7 +221,7 @@ It does not support `tq interact`.
 | `tq -V` / `tq --version` | Print version and exit. |
 | `tq -rc FILE ...` | Use one explicit config file. |
 | `tq -b tmux ...` | Use a backend for this command. |
-| `tq -g GROUP ...` | Use a queue group for this command. |
+| `tq -Q QUEUE ...` | Use a queue for this command. |
 | `tq ACTION -h` | Show help for an action. |
 
 ### Job Selection And Filters

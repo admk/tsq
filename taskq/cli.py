@@ -31,10 +31,10 @@ class CLI:
             'choices': list(BACKENDS.keys()),
             'help': 'The backend to use.',
         },
-        ('-g', '--group'): {
+        ('-Q', '--queue'): {
             'type': str,
             'default': None,
-            'help': 'The group to use.',
+            'help': 'The queue to use.',
         },
     }
     rc_path = f'.{TOOL_NAME}/config.toml'
@@ -90,14 +90,14 @@ class CLI:
 
     def _resolve_config(self, args, config):
         backend = args.backend or config.get('backend', 'tmux')
-        group = args.group or config.get('group', 'default')
+        queue = args.queue or config.get('queue', 'default')
         backend_config = config.get('backends', {}).get(backend, {})
-        group_config = config.get('groups', {}).get(group, {})
+        queue_config = config.get('queues', {}).get(queue, {})
         dict_merge(config, backend_config)
-        dict_merge(config, group_config)
+        dict_merge(config, queue_config)
         config.update({
             'backend': backend,
-            'group': group,
+            'queue': queue,
         })
         return config
 

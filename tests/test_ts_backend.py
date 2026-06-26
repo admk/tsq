@@ -49,7 +49,7 @@ def ts_backend(monkeypatch):
     backend = TaskSpoolerBackend(
         'ts',
         {
-            'backend': 'ts', 'group': 'default', 'command': 'ts',
+            'backend': 'ts', 'queue': 'default', 'command': 'ts',
             'socket': 'sock', 'slots': 2, 'alloc': {'gpus': 1, 'slots': 1},
             'env': {},
         },
@@ -129,7 +129,7 @@ def test_ts_init_without_nvidia_smi_uses_one_slot(monkeypatch):
     backend = TaskSpoolerBackend(
         'ts',
         {
-            'backend': 'ts', 'group': 'default', 'command': 'ts',
+            'backend': 'ts', 'queue': 'default', 'command': 'ts',
             'socket': 'sock', 'slots': 'auto', 'alloc': {}, 'env': {},
         },
     )

@@ -244,6 +244,28 @@ def test_commands_escapes_control_characters(fake_backend, rc_file, capsys):
     assert out == "1: echo 'a\\nb'\n"
 
 
+def test_commands_add_command_prints_replayable_add(
+    fake_backend, rc_file, capsys
+):
+    fake_backend.jobs[0]['command'] = "echo 'a\nb'"
+    fake_backend.jobs[0]['depends_on'] = [2, 3]
+    fake_backend.jobs[0]['git_ref'] = 'main'
+    fake_backend.jobs[0]['git_commit'] = 'abc123'
+
+    _, out = run_cli(['commands', '-a', '1'], rc_file, capsys)
+
+    assert out == (
+        f"1: {TOOL_NAME} add --ref abc123 -G 1 -N 2 "
+        "-D 2,3 echo 'a\\nb'\n"
+    )
+
+    _, out = run_cli(['commands', '-a', '-j', '1'], rc_file, capsys)
+    assert out == (
+        f"{TOOL_NAME} add --ref abc123 -G 1 -N 2 "
+        "-D 2,3 echo 'a\\nb'\n"
+    )
+
+
 def test_outputs_follow_requires_single_job(
     fake_backend, rc_file, tmp_path, capsys
 ):

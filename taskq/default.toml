@@ -10,9 +10,9 @@
 # - "dummy": no-op backend used mainly for tests.
 backend = "tmux"
 
-# Default queue group. Select another group with `tq -g NAME ...`.
-# Groups isolate queue state and may override most resolved settings.
-group = "default"
+# Default queue. Select another queue with `tq -Q NAME ...`.
+# Queues isolate state and may override most resolved settings.
+queue = "default"
 
 # Total queue capacity. Use an integer, or "auto" to use the number of GPUs
 # reported by nvidia-smi. If nvidia-smi is unavailable, "auto" resolves to 1.
@@ -40,26 +40,26 @@ slots = 1
 # OMP_NUM_THREADS = "1"
 # CUDA_DEVICE_ORDER = "PCI_BUS_ID"
 
-# Per-group overrides. A group table is merged after the selected backend table.
-# Useful group keys include slots, socket, visible_gpus, alloc, env,
+# Per-queue overrides. A queue table is merged after the selected backend table.
+# Useful queue keys include slots, socket, visible_gpus, alloc, env,
 # history_limit, broker_interval, and gpu_free_perc.
 #
-# Note: backend and group selection happens before group overrides are merged,
-# so a group table should not be used to choose the active backend or group.
-[groups.default]
-# The default group intentionally has no overrides.
+# Note: backend and queue selection happens before queue overrides are merged,
+# so a queue table should not be used to choose the active backend or queue.
+[queues.default]
+# The default queue intentionally has no overrides.
 #
 # Example:
-# [groups.gpu]
+# [queues.gpu]
 # slots = 4
 # visible_gpus = "0,1"
 #
-# [groups.gpu.alloc]
+# [queues.gpu.alloc]
 # gpus = 1
 # slots = 1
 
 # Backend-specific defaults. The table matching `backend` is merged into the
-# top-level configuration before the active group table is merged.
+# top-level configuration before the active queue table is merged.
 [backends.tmux]
 
 # tmux executable name or absolute path.

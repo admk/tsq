@@ -138,7 +138,7 @@ def write_tmux_rc(rc_file):
     rc_file.write_text(
         '\n'.join([
             'backend = "tmux"',
-            'group = "integration"',
+            'queue = "integration"',
             'slots = 2',
             'socket = "fake-socket"',
             '',

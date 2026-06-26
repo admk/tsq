@@ -44,19 +44,19 @@ class TmuxBackend(BackendBase):
         self.socket_path = str(
             cache_root / f'{self._sanitize_name(self.socket)}.sock'
         )
-        group = self.config.get('group', 'default')
+        queue = self.config.get('queue', 'default')
         self.config.pop('state_dir', None)
         state_name = self.socket
         self.state_dir = (
             cache_root
             / self._sanitize_name(state_name)
-            / group
+            / queue
         )
         self.jobs_dir = self.state_dir / 'jobs'
         self.counter_file = self.state_dir / 'next_id'
         self.broker_config_file = self.state_dir / 'broker.json'
         self.tmux_default_config_file = Path(__file__).with_name('default.conf')
-        self.prefix = self._sanitize_name(f'taskq-{state_name}-{group}')
+        self.prefix = self._sanitize_name(f'taskq-{state_name}-{queue}')
         self.broker_session = f'{self.prefix}-broker'
 
     @staticmethod
@@ -513,7 +513,7 @@ class TmuxBackend(BackendBase):
         slot_keys = [
             'slots',
             f'backends.{self.name}.slots',
-            f'groups.{self.config["group"]}.slots',
+            f'queues.{self.config["queue"]}.slots',
         ]
         if key not in slot_keys:
             return None

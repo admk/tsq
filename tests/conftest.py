@@ -185,7 +185,7 @@ def rc_file(tmp_path):
     path.write_text(
         '\n'.join([
             'backend = "fake"',
-            'group = "test"',
+            'queue = "test"',
             'slots = 2',
             '',
             '[alloc]',

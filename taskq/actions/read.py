@@ -14,6 +14,7 @@ from ..common import tqdm, FilterArgs, file_tail_lines
 from ..utils import escape_command_display, timedelta_format
 from .base import register_action
 from .filter import FilterActionBase
+from .repeat import dry_add_command
 
 
 term = Terminal()
@@ -207,6 +208,10 @@ class CommandsAction(ReadActionBase):
             'action': 'store_true',
             'help': 'Do not print the job ID before the command.',
         },
+        ('-a', '--add-command'): {
+            'action': 'store_true',
+            'help': 'Print a replayable tq add command for each job.',
+        },
     }
 
     def __init__(self, name, parser_kwargs):
@@ -218,7 +223,16 @@ class CommandsAction(ReadActionBase):
             self.ids, self.filters, tqdm_disable=tqdm_disable)
         outputs = []
         for i in info:
-            command = escape_command_display(i['command'])
+            if args.add_command:
+                command = dry_add_command(
+                    i['command'],
+                    i.get('gpus_required', 0),
+                    i.get('slots_required', 1),
+                    i.get('depends_on'),
+                    i.get('git_commit') or i.get('git_ref'),
+                )
+            else:
+                command = escape_command_display(i['command'])
             if args.no_job_ids:
                 outputs.append(command)
             else:

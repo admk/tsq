@@ -32,24 +32,24 @@ def test_load_config_merges_xdg_and_project_config(tmp_path, monkeypatch):
     user_config = tmp_path / 'xdg' / TOOL_NAME / 'config.toml'
     user_config.parent.mkdir(parents=True)
     user_config.write_text(
-        'group = "user"\nslots = 2\n',
+        'queue = "user"\nslots = 2\n',
         encoding='utf-8',
     )
     project_config = tmp_path / f'.{TOOL_NAME}' / 'config.toml'
     project_config.parent.mkdir()
     project_config.write_text(
-        'group = "project"\n',
+        'queue = "project"\n',
         encoding='utf-8',
     )
     (tmp_path / f'.{TOOL_NAME}.toml').write_text(
-        'group = "legacy"\nslots = 99\n',
+        'queue = "legacy"\nslots = 99\n',
         encoding='utf-8',
     )
     args = type('Args', (), {'rc_file': None})()
 
     config = CLI()._load_config(args)
 
-    assert config['group'] == 'project'
+    assert config['queue'] == 'project'
     assert config['slots'] == 2
 
 
@@ -63,14 +63,14 @@ def test_load_config_uses_parent_project_config(tmp_path, monkeypatch):
     )
     project_config.parent.mkdir()
     project_config.write_text(
-        'group = "parent"\n',
+        'queue = "parent"\n',
         encoding='utf-8',
     )
     args = type('Args', (), {'rc_file': None})()
 
     config = CLI()._load_config(args)
 
-    assert config['group'] == 'parent'
+    assert config['queue'] == 'parent'
     assert args.rc_file == str(project_config)
 
 
@@ -83,15 +83,15 @@ def test_load_config_prefers_nearest_project_config(tmp_path, monkeypatch):
         tmp_path / 'workspace' / f'.{TOOL_NAME}' / 'config.toml'
     )
     parent_config.parent.mkdir()
-    parent_config.write_text('group = "parent"\n', encoding='utf-8')
+    parent_config.write_text('queue = "parent"\n', encoding='utf-8')
     child_config = child / f'.{TOOL_NAME}' / 'config.toml'
     child_config.parent.mkdir()
-    child_config.write_text('group = "child"\n', encoding='utf-8')
+    child_config.write_text('queue = "child"\n', encoding='utf-8')
     args = type('Args', (), {'rc_file': None})()
 
     config = CLI()._load_config(args)
 
-    assert config['group'] == 'child'
+    assert config['queue'] == 'child'
     assert args.rc_file == str(child_config)
 
 
@@ -105,36 +105,36 @@ def test_load_config_skips_user_config_when_xdg_config_home_unset(
         tmp_path / 'home' / '.config' / TOOL_NAME / 'config.toml'
     )
     user_config.parent.mkdir(parents=True)
-    user_config.write_text('group = "home"\n', encoding='utf-8')
+    user_config.write_text('queue = "home"\n', encoding='utf-8')
     project_config = tmp_path / f'.{TOOL_NAME}' / 'config.toml'
     project_config.parent.mkdir()
-    project_config.write_text('group = "project"\n', encoding='utf-8')
+    project_config.write_text('queue = "project"\n', encoding='utf-8')
     args = type('Args', (), {'rc_file': None})()
 
     config = CLI()._load_config(args)
 
-    assert config['group'] == 'project'
+    assert config['queue'] == 'project'
 
 
 def test_explicit_rc_merges_packaged_defaults(tmp_path):
     rc = tmp_path / 'tq.toml'
-    rc.write_text('group = "custom"\n', encoding='utf-8')
+    rc.write_text('queue = "custom"\n', encoding='utf-8')
     args = type('Args', (), {'rc_file': str(rc)})()
 
     config = CLI()._load_config(args)
 
-    assert config['group'] == 'custom'
+    assert config['queue'] == 'custom'
     assert config['alloc']['gpus'] == 0
     assert 'state_dir' not in config['backends']['tmux']
 
 
-def test_resolve_config_merges_backend_and_group():
+def test_resolve_config_merges_backend_and_queue():
     cli = CLI()
-    args = type('Args', (), {'backend': 'tmux', 'group': 'gpu'})()
+    args = type('Args', (), {'backend': 'tmux', 'queue': 'gpu'})()
     config = tomlkit.parse(
         '''
 backend = "ts"
-group = "default"
+queue = "default"
 slots = 1
 
 [alloc]
@@ -144,16 +144,16 @@ slots = 1
 [backends.tmux]
 command = "tmux"
 
-[groups.gpu]
+[queues.gpu]
 slots = 4
 
-[groups.gpu.alloc]
+[queues.gpu.alloc]
 gpus = 2
 '''
     )
     resolved = cli._resolve_config(args, config)
     assert resolved['backend'] == 'tmux'
-    assert resolved['group'] == 'gpu'
+    assert resolved['queue'] == 'gpu'
     assert resolved['command'] == 'tmux'
     assert resolved['slots'] == 4
     assert resolved['alloc']['gpus'] == 2
