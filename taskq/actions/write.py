@@ -74,9 +74,22 @@ class RerunAction(WriteActionBase):
 
     @staticmethod
     def format_id_chain(ids):
-        return ' -> '.join(str(job_id) for job_id in ids)
+        if len(ids) == 1:
+            return str(ids[0])
+        return f"({' -> '.join(str(job_id) for job_id in ids)})"
 
-    def rerun(self, info, commit, repeat=1):
+    @staticmethod
+    def format_id_group(ids):
+        if len(ids) == 1:
+            return str(ids[0])
+        return f"({', '.join(str(job_id) for job_id in ids)})"
+
+    @classmethod
+    def format_rerun_ids(cls, original_id, ids, chain=True):
+        formatter = cls.format_id_chain if chain else cls.format_id_group
+        return f'{original_id} -> {formatter(ids)}'
+
+    def rerun(self, info, commit, repeat=1, chain=True):
         requests = []
         for i in info:
             command = i['command']
@@ -105,6 +118,7 @@ class RerunAction(WriteActionBase):
                 )
             ),
             desc='rerun',
+            chain=chain,
         )
 
     def main(self, args):
@@ -112,9 +126,9 @@ class RerunAction(WriteActionBase):
         if not info:
             print('No job to rerun.')
             return
-        new_ids = self.rerun(info, args.commit, args.repeat)
+        new_ids = self.rerun(info, args.commit, args.repeat, args.chain)
         reran_ids = ', '.join(
-            f"{i['id']} -> {self.format_id_chain(j)}"
+            self.format_rerun_ids(i['id'], j, args.chain)
             for i, j in zip(info, new_ids))
         print('Reran:', reran_ids)
 
@@ -126,9 +140,9 @@ class RequeueAction(RerunAction, RemoveAction):
         if not info:
             print('No job to requeue.')
             return
-        new_ids = self.rerun(info, args.commit, args.repeat)
+        new_ids = self.rerun(info, args.commit, args.repeat, args.chain)
         self.remove(info, args.commit)
         requeued_ids = ', '.join(
-            f"{i['id']} -> {self.format_id_chain(j)}"
+            self.format_rerun_ids(i['id'], j, args.chain)
             for i, j in zip(info, new_ids))
         print('Requeued:', requeued_ids)

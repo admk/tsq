@@ -258,6 +258,7 @@ class AddAction(DryActionBase):
                         request.kwargs.get('git_ref'),
                     )
                 ),
+                chain=args.chain,
             )
             print('\n'.join(dry_commands))
             if skipped:
@@ -272,7 +273,8 @@ class AddAction(DryActionBase):
             for c in commands
         ]
         id_groups = add_repeated(
-            self.backend, requests, args.repeat, commit=args.commit)
+            self.backend, requests, args.repeat, commit=args.commit,
+            chain=args.chain)
         ids = [job_id for group in id_groups for job_id in group]
         if any(ids):
             print('Added:', ', '.join(ids))

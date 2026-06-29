@@ -17,6 +17,12 @@ repeat_options = {
             'Add each selected command COUNT times. Repeated instances of '
             'the same command are chained with dependencies.'),
     },
+    ('--no-chain', ): {
+        'action': 'store_false',
+        'dest': 'chain',
+        'default': True,
+        'help': 'Do not add dependencies between repeated instances.',
+    },
 }
 
 
@@ -72,7 +78,10 @@ def unique_append(values, value):
         values.append(value)
 
 
-def add_repeated(backend, requests, repeat, commit=True, dry_run=None, desc='add'):
+def add_repeated(
+    backend, requests, repeat, commit=True, dry_run=None, desc='add',
+    chain=True,
+):
     id_groups = []
     previous_by_command = {}
     for request in tqdm(requests, desc=desc):
@@ -80,7 +89,7 @@ def add_repeated(backend, requests, repeat, commit=True, dry_run=None, desc='add
         for _ in range(repeat):
             depends_on = list(request.depends_on or [])
             previous_id = previous_by_command.get(request.command)
-            if previous_id is not None:
+            if chain and previous_id is not None:
                 unique_append(depends_on, previous_id)
             if not commit:
                 if dry_run:

@@ -158,6 +158,42 @@ def test_add_repeat_chains_same_command(fake_backend, rc_file, capsys):
     ]
 
 
+def test_add_repeat_no_chain(fake_backend, rc_file, capsys):
+    _, out = run_cli(
+        ['add', '-R', '3', '--no-chain', 'echo', 'hi'], rc_file, capsys)
+
+    assert out.strip() == 'Added: 100, 101, 102'
+    calls = [
+        call for call in fake_backend.instances[-1].calls
+        if call[0] == 'add'
+    ]
+    assert calls == [
+        ('add', 'echo hi', None, None),
+        ('add', 'echo hi', None, None),
+        ('add', 'echo hi', None, None),
+    ]
+
+
+def test_add_repeat_no_chain_preserves_explicit_dependencies(
+    fake_backend, rc_file, capsys
+):
+    _, out = run_cli(
+        ['add', '-R', '2', '--no-chain', '-D', '1', 'echo', 'hi'],
+        rc_file,
+        capsys,
+    )
+
+    assert out.strip() == 'Added: 100, 101'
+    calls = [
+        call for call in fake_backend.instances[-1].calls
+        if call[0] == 'add'
+    ]
+    assert calls == [
+        ('add', 'echo hi', None, None, [1]),
+        ('add', 'echo hi', None, None, [1]),
+    ]
+
+
 def test_add_extrapolates_stdin_arguments(monkeypatch):
     monkeypatch.setattr('taskq.actions.add.STDIN_TTY', False)
     monkeypatch.setattr(sys, 'stdin', io.StringIO('one,two\n'))
@@ -344,7 +380,7 @@ def test_write_actions_and_danger_guard(fake_backend, rc_file, capsys):
 def test_rerun_repeat_chains_same_command(fake_backend, rc_file, capsys):
     _, out = run_cli(['rerun', '-R', '3', '1'], rc_file, capsys)
 
-    assert out.strip() == 'Reran: 1 -> 100 -> 101 -> 102'
+    assert out.strip() == 'Reran: 1 -> (100 -> 101 -> 102)'
     calls = [
         call for call in fake_backend.instances[-1].calls
         if call[0] == 'add'
@@ -353,6 +389,21 @@ def test_rerun_repeat_chains_same_command(fake_backend, rc_file, capsys):
         ('add', 'python train.py', 1, 2),
         ('add', 'python train.py', 1, 2, ['100']),
         ('add', 'python train.py', 1, 2, ['101']),
+    ]
+
+
+def test_rerun_repeat_no_chain(fake_backend, rc_file, capsys):
+    _, out = run_cli(['rerun', '-R', '3', '--no-chain', '1'], rc_file, capsys)
+
+    assert out.strip() == 'Reran: 1 -> (100, 101, 102)'
+    calls = [
+        call for call in fake_backend.instances[-1].calls
+        if call[0] == 'add'
+    ]
+    assert calls == [
+        ('add', 'python train.py', 1, 2),
+        ('add', 'python train.py', 1, 2),
+        ('add', 'python train.py', 1, 2),
     ]
 
 
@@ -370,10 +421,23 @@ def test_rerun_short_running_filter_still_works(fake_backend, rc_file, capsys):
 def test_requeue_repeat_chains_same_command(fake_backend, rc_file, capsys):
     _, out = run_cli(['requeue', '-R', '2', '1'], rc_file, capsys)
 
-    assert out.strip() == 'Requeued: 1 -> 100 -> 101'
+    assert out.strip() == 'Requeued: 1 -> (100 -> 101)'
     calls = fake_backend.instances[-1].calls
     assert ('add', 'python train.py', 1, 2) in calls
     assert ('add', 'python train.py', 1, 2, ['100']) in calls
+    assert ('remove', 1, True) in calls
+
+
+def test_requeue_repeat_no_chain(fake_backend, rc_file, capsys):
+    _, out = run_cli(['requeue', '-R', '2', '--no-chain', '1'], rc_file, capsys)
+
+    assert out.strip() == 'Requeued: 1 -> (100, 101)'
+    calls = fake_backend.instances[-1].calls
+    assert calls.count(('add', 'python train.py', 1, 2)) == 2
+    assert not [
+        call for call in calls
+        if call[0] == 'add' and len(call) > 4
+    ]
     assert ('remove', 1, True) in calls
 
 
@@ -382,7 +446,18 @@ def test_rerun_repeat_dry_run_chains_dependencies(fake_backend, rc_file, capsys)
 
     assert f'{TOOL_NAME} add -G 1 -N 2 python train.py' in out
     assert f"{TOOL_NAME} add -G 1 -N 2 -D '<id>' python train.py" in out
-    assert 'Reran: 1 -> <id> -> <id>' in out
+    assert 'Reran: 1 -> (<id> -> <id>)' in out
+    calls = fake_backend.instances[-1].calls
+    assert not [call for call in calls if call[0] == 'add']
+
+
+def test_rerun_repeat_dry_run_no_chain(fake_backend, rc_file, capsys):
+    _, out = run_cli(
+        ['rerun', '-d', '-R', '2', '--no-chain', '1'], rc_file, capsys)
+
+    assert out.count(f'{TOOL_NAME} add -G 1 -N 2 python train.py') == 2
+    assert '-D' not in out
+    assert 'Reran: 1 -> (<id>, <id>)' in out
     calls = fake_backend.instances[-1].calls
     assert not [call for call in calls if call[0] == 'add']
 
