@@ -64,16 +64,27 @@ def workflow_env(monkeypatch, tmp_path, repo):
         'queue': 'default',
         'explore': {
             'command': ['codex', 'exec', '{}'],
-            'parallel': 4,
-            'max_adjustments': 3,
-            'max_agent_jobs': 32,
-            'max_merges': 6,
-            'max_wall_time': 28800,
-            'max_files': 5,
-            'max_lines': 300,
-            'protected': ['.tq/**', 'tests/**'],
-            'controller_interval': 5,
-            'controller_timeout': 30,
+            'timeout': 1800,
+            'prompt': '$objective $context',
+            'response_repair_prompt': '$original_prompt $error',
+            'planning': {},
+            'optimization': {
+                'command': ['optimizer', '{}'], 'parallel': 4,
+                'adjust_prompt': '$objective $artifacts',
+                'max_adjustments': 3, 'max_files': 5, 'max_lines': 300,
+                'protected': ['.tq/**', 'tests/**'],
+            },
+            'inspection': {},
+            'validation': {'checks': [], 'min_improvement': 0},
+            'merge': {
+                'review_prompt': '$objective $artifacts',
+                'rebase_prompt': '$objective $artifacts',
+                'max_accepted_attempts': 6,
+            },
+            'controller': {
+                'max_wall_time': 28800, 'interval': 5,
+                'heartbeat_timeout': 30,
+            },
         },
     }
     backend = StubTmuxBackend(tmp_path / 'cache', config)
@@ -94,6 +105,37 @@ def test_explore_action_is_registered_and_help_lists_subcommands(capsys):
     assert 'run autonomous optimization campaigns' in CLI().parser.format_help()
     assert '{start,status,inspect,pause,resume,stop}' in output
     assert '--cmd' in output
+    assert '--max-accepted-attempts' in output
+    assert '--max-merges' not in output
+
+
+def test_explore_start_forwards_accepted_attempt_limit(
+    monkeypatch, tmp_path, capsys,
+):
+    import taskq.actions.explore as explore_action
+
+    calls = []
+
+    class StubWorkflow:
+        def __init__(self, backend, config):
+            pass
+
+        def start(self, objective, **options):
+            calls.append((objective, options))
+            return {'id': 'campaign-1', 'target_ref': 'main'}
+
+    rc = tmp_path / 'config.toml'
+    rc.write_text('backend = "dummy"\n', encoding='utf-8')
+    monkeypatch.setattr(explore_action, 'ExploreWorkflow', StubWorkflow)
+
+    CLI().main([
+        '-rc', str(rc), 'explore', 'start', 'reduce latency',
+        '--max-accepted-attempts', '2',
+    ])
+
+    assert calls[0][0] == 'reduce latency'
+    assert calls[0][1]['max_accepted_attempts'] == 2
+    assert capsys.readouterr().out == 'Started exploration campaign-1 on main.\n'
 
 
 def test_explore_list_output_uses_workflow(monkeypatch, tmp_path, capsys):
@@ -207,15 +249,15 @@ def test_start_creates_mainline_state_and_registers_controller(
     assert git(repo, 'rev-parse', '--verify', campaign['mainline_ref'])
     assert Path(campaign['config']['mainline_worktree']).is_dir()
     assert Path(campaign['config']['control_cwd']).is_dir()
-    assert campaign['config']['command'] == [
+    assert campaign['config']['phases']['planning']['command'] == [
         'agent', 'run', '--label', 'safe; still one arg', '{}',
     ]
-    assert campaign['config']['checks'] == ['pytest -q']
-    assert campaign['config']['protected_paths'] == [
+    assert campaign['config']['phases']['validation']['checks'] == ['pytest -q']
+    assert campaign['config']['phases']['optimization']['protected_paths'] == [
         '.tq/**', 'tests/**', 'fixtures/**',
     ]
     assert campaign['budgets']['parallel'] == 2
-    assert campaign['config']['min_improvement'] == 2.5
+    assert campaign['config']['phases']['validation']['min_improvement'] == 2.5
     assert reconciled == [campaign_id]
 
     assert len(backend.registrations) == 1
@@ -231,6 +273,28 @@ def test_start_creates_mainline_state_and_registers_controller(
         assert state.get_campaign(campaign_id) == campaign
 
 
+def test_phase_options_inherit_common_values_and_override_them(workflow_env):
+    workflow, _, _ = workflow_env
+
+    campaign = workflow.start('phase inheritance', name='phase-inheritance')
+    phases = campaign['config']['phases']
+
+    assert phases['planning']['command'] == ['codex', 'exec', '{}']
+    assert phases['inspection']['command'] == ['codex', 'exec', '{}']
+    assert phases['merge']['command'] == ['codex', 'exec', '{}']
+    assert phases['optimization']['command'] == ['optimizer', '{}']
+    assert all(phases[name]['timeout'] == 1800 for name in (
+        'planning', 'optimization', 'inspection', 'validation', 'merge'))
+
+
+def test_start_rejects_unknown_prompt_placeholders(workflow_env):
+    workflow, _, _ = workflow_env
+    workflow.config['explore']['planning']['prompt'] = '$unknown_value'
+
+    with pytest.raises(BackendError, match='unknown value'):
+        workflow.start('invalid prompt template')
+
+
 @pytest.mark.parametrize('command', ['agent --prompt={}', ''])
 def test_start_rejects_unsafe_command_template_as_backend_error(
     workflow_env, command,
@@ -241,14 +305,45 @@ def test_start_rejects_unsafe_command_template_as_backend_error(
         workflow.start('reduce latency', command=command)
 
 
-def test_start_rejects_zero_limits_instead_of_using_defaults(workflow_env):
+def test_start_rejects_zero_parallelism(workflow_env):
     workflow, backend, reconciled = workflow_env
 
-    with pytest.raises(BackendError, match='limits must be positive'):
+    with pytest.raises(BackendError, match='parallelism.*must be positive'):
         workflow.start('reduce latency', parallel=0)
 
     assert backend.registrations == []
     assert reconciled == []
+
+
+def test_zero_maximums_disable_campaign_caps(workflow_env):
+    workflow, _, _ = workflow_env
+
+    campaign = workflow.start(
+        'unbounded campaign', max_adjustments=0,
+        max_accepted_attempts=0, max_time=0, max_files=0, max_lines=0,
+    )
+
+    assert campaign['budgets']['max_adjustments'] == 0
+    assert campaign['budgets']['max_accepted_attempts'] == 0
+    assert campaign['budgets']['max_wall_time'] == 0
+    assert campaign['budgets']['deadline'] is None
+    optimization = campaign['config']['phases']['optimization']
+    assert optimization['max_files'] == 0
+    assert optimization['max_lines'] == 0
+
+
+@pytest.mark.parametrize('option', [
+    {'max_adjustments': -1},
+    {'max_accepted_attempts': -1},
+    {'max_time': -1},
+    {'max_files': -1},
+    {'max_lines': -1},
+])
+def test_start_rejects_negative_maximums(workflow_env, option):
+    workflow, _, _ = workflow_env
+
+    with pytest.raises(BackendError, match='maximums cannot be negative'):
+        workflow.start('invalid campaign', **option)
 
 
 def test_workflow_status_and_inspect_report_attempt_diff(
@@ -306,6 +401,11 @@ def test_status_inspect_and_lifecycle_actions_support_json_and_campaign_ids(
                 'counts': {'attempts': 0},
                 'attempts': [], 'merge_requests': [],
                 'decisions': [], 'findings': [],
+                'manual_landing': {
+                    'message': 'Automatic fast-forward is not possible.',
+                    'reason': 'branches diverged',
+                    'command': 'git merge campaign-mainline',
+                },
             }
 
         def inspect(self, campaign, attempt):
@@ -332,6 +432,13 @@ def test_status_inspect_and_lifecycle_actions_support_json_and_campaign_ids(
     assert json.loads(capsys.readouterr().out)['campaign']['generation'] == 2
 
     CLI().main([
+        '-rc', str(rc), 'explore', 'status', 'campaign-1',
+    ])
+    status_output = capsys.readouterr().out
+    assert 'warning: Automatic fast-forward is not possible.' in status_output
+    assert 'run: git merge campaign-mainline' in status_output
+
+    CLI().main([
         '-rc', str(rc), 'explore', 'inspect', 'campaign-1', 'attempt-1',
         '--json',
     ])
@@ -346,6 +453,7 @@ def test_status_inspect_and_lifecycle_actions_support_json_and_campaign_ids(
         assert capsys.readouterr().out == 'campaign-1: {}\n'.format(status)
 
     assert calls == [
+        ('status', 'campaign-1'),
         ('status', 'campaign-1'),
         ('inspect', 'campaign-1', 'attempt-1'),
         ('set_status', 'campaign-1', 'paused'),

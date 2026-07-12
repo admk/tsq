@@ -19,7 +19,7 @@ def add_campaign(state, campaign_id='c1'):
         'refs/heads/main',
         'refs/heads/tq/explore/{}/mainline'.format(campaign_id),
         target_head='abc',
-        budgets={'agent_jobs': 32, 'merges': 6},
+        budgets={'parallel': 4, 'max_accepted_attempts': 6},
         config={
             'runner': ['codex', 'exec', '{}'],
             'checks': ['pytest -q'],
@@ -57,7 +57,7 @@ def test_campaign_state_persists_with_schema_and_wal(tmp_path):
         assert campaign['objective'] == created['objective']
         assert campaign['generation'] == 2
         assert campaign['status'] == 'paused'
-        assert campaign['budgets']['agent_jobs'] == 32
+        assert campaign['budgets']['parallel'] == 4
         assert campaign['config']['runner'] == ['codex', 'exec', '{}']
 
 

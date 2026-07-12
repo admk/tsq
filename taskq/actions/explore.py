@@ -29,8 +29,7 @@ class ExploreAction(ActionBase):
         ('--protect',): {'action': 'append', 'default': None},
         ('--parallel',): {'type': int, 'default': None},
         ('--max-adjustments',): {'type': int, 'default': None},
-        ('--max-agent-jobs',): {'type': int, 'default': None},
-        ('--max-merges',): {'type': int, 'default': None},
+        ('--max-accepted-attempts',): {'type': int, 'default': None},
         ('--max-time',): {'default': None},
         ('--max-files',): {'type': int, 'default': None},
         ('--max-lines',): {'type': int, 'default': None},
@@ -67,8 +66,8 @@ class ExploreAction(ActionBase):
                 min_improvement=args.min_improvement,
                 protect=args.protect, parallel=args.parallel,
                 max_adjustments=args.max_adjustments,
-                max_agent_jobs=args.max_agent_jobs,
-                max_merges=args.max_merges, max_time=args.max_time,
+                max_accepted_attempts=args.max_accepted_attempts,
+                max_time=args.max_time,
                 max_files=args.max_files, max_lines=args.max_lines,
             )
             print('Started exploration {} on {}.'.format(
@@ -85,6 +84,11 @@ class ExploreAction(ActionBase):
                 campaign['generation'], result['counts']['attempts'],
                 result['counts'].get('merge_requests_queued', 0) +
                 result['counts'].get('merge_requests_processing', 0)))
+            if result.get('manual_landing'):
+                landing = result['manual_landing']
+                print('warning: {}'.format(landing['message']))
+                print('reason: {}'.format(landing['reason']))
+                print('run: {}'.format(landing['command']))
             for attempt in result['attempts']:
                 print('  {}  {}  {}'.format(
                     attempt['id'], attempt['status'], attempt['branch']))

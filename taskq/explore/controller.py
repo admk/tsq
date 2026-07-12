@@ -23,6 +23,7 @@ from .agent import (
     parse_planner_response,
     parse_reviewer_response,
     render_command,
+    render_prompt,
 )
 from .git import (
     changed_paths,
@@ -44,7 +45,7 @@ TERMINAL = {'success', 'failed', 'killed', 'interrupted'}
 VALIDATION_SCRIPT = str(Path(__file__).with_name('validation.py'))
 AGENT_ROLES = {
     'planner', 'optimizer', 'adjust', 'reviewer',
-    'rebase', 'landing_rebase', 'landing_reviewer',
+    'rebase',
 }
 
 
@@ -84,6 +85,25 @@ class ExploreController:
     def budgets(self):
         return self.campaign['budgets']
 
+    def _phase(self, name):
+        return self.config['phases'][name]
+
+    @staticmethod
+    def _job_phase(job):
+        role = job['role']
+        if role == 'planner':
+            return 'planning'
+        if role in {'optimizer', 'adjust'}:
+            return 'optimization'
+        if role == 'validation':
+            return 'validation'
+        if role == 'rebase':
+            return 'merge'
+        if role == 'reviewer':
+            phase = (job.get('metadata') or {}).get('phase', 'inspection')
+            return phase if phase in {'inspection', 'merge'} else 'inspection'
+        raise ValueError('unknown exploration role: {}'.format(role))
+
     def reconcile(self):
         lock_path = Path(self.config['work_root']) / 'controller.lock'
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -105,21 +125,20 @@ class ExploreController:
         self._adopt_orphan_jobs()
         self._reconcile_attempt_counters()
         self._refresh_jobs()
-        if (self.campaign['status'] == 'active' and
-                time.time() >= float(self.budgets['deadline'])):
+        if self.campaign['status'] == 'active' and self._deadline_reached():
             self.state.update_campaign(self.campaign_id, status='draining')
         self._cleanup_finished_attempts()
         event = self.state.claim_event(self.worker, self.campaign_id)
         if event:
             self._handle_event(event)
             return
-        if self._active_job('reviewer') or self._active_job('landing_reviewer'):
+        if self._active_job('reviewer'):
             return
         if not self.state.merge_queue_empty(self.campaign_id):
             self._advance_merge()
             return
         campaign = self.campaign
-        if campaign['status'] in {'draining', 'landing', 'waiting_to_land'}:
+        if campaign['status'] in {'draining', 'waiting_to_land'}:
             self._advance_landing()
             return
         if campaign['status'] != 'active':
@@ -143,7 +162,7 @@ class ExploreController:
             status = info['status'] if info else 'interrupted'
             deadline_cancel = (
                 info and status == 'queued' and self._speculative(job) and
-                time.time() >= float(self.budgets['deadline']))
+                self._deadline_reached())
             if (deadline_cancel or (
                     info and status == 'running' and self._overdue(info, job))):
                 if hasattr(self.backend, 'kill'):
@@ -192,8 +211,8 @@ class ExploreController:
         if isinstance(started, str):
             started = datetime.datetime.fromisoformat(started)
         now = datetime.datetime.now(started.tzinfo) if started.tzinfo else datetime.datetime.now()
-        return (now - started).total_seconds() > float(
-            self.config.get('action_timeout', 1800))
+        timeout = self._phase(self._job_phase(job)).get('timeout', 1800)
+        return (now - started).total_seconds() > float(timeout)
 
     def _handle_event(self, event):
         job = self.state.get_job(event['job_id'])
@@ -216,9 +235,9 @@ class ExploreController:
                 self._finish_mutation(job, output)
             elif role == 'validation':
                 self._finish_validation(job, output)
-            elif role in {'reviewer', 'landing_reviewer'}:
+            elif role == 'reviewer':
                 self._finish_review(job, output, event)
-            elif role in {'rebase', 'landing_rebase'}:
+            elif role == 'rebase':
                 self._finish_rebase(job, output)
             self.state.complete_event(event['id'])
             self._cleanup_event_worktrees(job)
@@ -293,7 +312,7 @@ class ExploreController:
                 self._start_attempt(direction_id, work_root / direction_id)
 
     def _start_attempt(self, direction_id, worktree):
-        if self._free_slots() < 1 or self._remaining_agent_jobs() < 4:
+        if self._free_slots() < 1:
             return
         campaign = self.campaign
         attempt_id = '{}-a'.format(direction_id)
@@ -309,18 +328,17 @@ class ExploreController:
             metadata={'workspace': meta},
         )
         direction = self.state.get_direction(direction_id)
+        optimization = self._phase('optimization')
         prompt = build_optimizer_prompt(
             campaign['objective'], direction['metadata'],
+            template=optimization['prompt'],
+            adjust_template=optimization['adjust_prompt'],
             memory=self._memory(), artifacts={},
-            max_files=self.config['max_files'],
-            max_lines=self.config['max_lines'],
+            max_files=optimization['max_files'],
+            max_lines=optimization['max_lines'],
         )
-        if not self._queue_agent(
-            'optimizer', prompt, worktree, attempt_id, direction_id
-        ):
-            self._abandon(
-                self.state.get_attempt(attempt_id), 'agent budget exhausted')
-            return
+        self._queue_agent(
+            'optimizer', prompt, worktree, attempt_id, direction_id)
         self.state.update_direction(direction_id, status='running')
 
     def _finish_mutation(self, job, output):
@@ -333,7 +351,8 @@ class ExploreController:
             self._dispatch_mutation_review(attempt, saved)
             return
         paths = changed_paths(attempt['worktree'], attempt['head'])
-        protected = protected_paths(paths, self.config['protected_paths'])
+        optimization = self._phase('optimization')
+        protected = protected_paths(paths, optimization['protected_paths'])
         head, _ = snapshot(
             attempt['worktree'],
             'tq explore {} {}'.format(self.campaign_id, job['role']),
@@ -348,9 +367,11 @@ class ExploreController:
         changed_lines = sum(
             line.startswith(('+', '-')) and not line.startswith(('+++', '---'))
             for line in action_diff.splitlines())
+        max_files = int(optimization['max_files'])
+        max_lines = int(optimization['max_lines'])
         limit_violation = (
-            len(paths) > int(self.config['max_files']) or
-            changed_lines > int(self.config['max_lines']))
+            (max_files > 0 and len(paths) > max_files) or
+            (max_lines > 0 and changed_lines > max_lines))
         artifacts = {
             'job_status': job['status'],
             'worker_output': output[-20000:],
@@ -400,11 +421,6 @@ class ExploreController:
             else:
                 self.state.update_campaign(self.campaign_id, config=config)
             return
-        if metadata.get('phase') == 'landing_validation':
-            artifacts = dict(metadata.get('artifacts') or {})
-            artifacts['validation'] = result
-            self._queue_landing_reviewer(artifacts)
-            return
         artifacts = dict(metadata.get('artifacts') or {})
         artifacts['validation'] = result
         self._queue_reviewer(attempt, metadata['phase'], artifacts,
@@ -419,8 +435,8 @@ class ExploreController:
             '{}-{}-validation.json'.format(attempt['id'], time.time_ns()))
         spec_path.parent.mkdir(parents=True, exist_ok=True)
         spec_path.write_text(json.dumps({
-            'checks': self.config.get('checks', []),
-            'score': self.config.get('score'),
+            'checks': self._phase('validation').get('checks', []),
+            'score': self._phase('validation').get('score'),
             'score_repeats': 3,
             'score_seed': time.time_ns(),
             'baseline_cwd': str(baseline_cwd),
@@ -457,18 +473,21 @@ class ExploreController:
             not artifacts.get('limit_violation') and eligible(
             validation or {'checks_passed': True},
             validation.get('baseline_score', baseline.get('score')),
-            self.config.get('score_direction'),
-            self.config.get('min_improvement', 0),
+            self._phase('validation').get('score_direction'),
+            self._phase('validation').get('min_improvement', 0),
             ))
         artifacts['eligible'] = allowed
         direction = self.state.get_direction(attempt['direction_id'])
+        phase_config = self._phase(phase)
         prompt = build_reviewer_prompt(
             self.campaign['objective'], direction['metadata'],
+            template=phase_config['prompt'],
             memory=self._memory(), artifacts=artifacts,
-            phase=phase, max_files=self.config['max_files'],
-            max_lines=self.config['max_lines'],
+            phase=phase,
+            max_files=self._phase('optimization')['max_files'],
+            max_lines=self._phase('optimization')['max_lines'],
         )
-        job_id = self._queue_agent(
+        self._queue_agent(
             'reviewer', prompt, self.config['control_cwd'],
             attempt['id'], attempt['direction_id'], control=True,
             metadata={
@@ -476,12 +495,6 @@ class ExploreController:
                 'merge_request_id': merge_request_id,
             },
         )
-        if job_id is None:
-            if phase == 'merge' and merge_request_id is not None:
-                self.state.complete_merge_request(
-                    merge_request_id, 'failed',
-                    {'reason': 'agent budget exhausted before review'})
-            self._abandon(attempt, 'agent budget exhausted before review')
 
     def _finish_review(self, job, output, event):
         metadata = job['metadata']
@@ -513,9 +526,7 @@ class ExploreController:
             next_direction=decision['next_direction'],
         )
         self._record_memory(attempt, decision, phase)
-        if phase == 'landing':
-            self._apply_landing_decision(decision, metadata)
-        elif phase == 'merge':
+        if phase == 'merge':
             self._apply_merge_decision(attempt, decision, merge_request_id, metadata)
         else:
             self._apply_inspection_decision(attempt, decision)
@@ -527,7 +538,9 @@ class ExploreController:
         value = decision['decision']
         if value == 'accept':
             merged = self.state.list_merge_requests(self.campaign_id, status='merged')
-            if len(merged) >= int(self.budgets['max_merges']):
+            if self._limit_reached(
+                self.budgets['max_accepted_attempts'], len(merged)
+            ):
                 self._abandon(attempt, 'merge limit reached')
                 self.state.update_campaign(self.campaign_id, status='draining')
                 return
@@ -540,7 +553,9 @@ class ExploreController:
             elif attempt['stale_count'] >= 2:
                 self._abandon(
                     attempt, 'repeated stale actions require a structural pivot')
-            elif attempt['adjustments'] >= int(self.budgets['max_adjustments']):
+            elif self._limit_reached(
+                self.budgets['max_adjustments'], attempt['adjustments']
+            ):
                 self._abandon(attempt, 'adjustment limit reached')
             elif self.state.merge_queue_empty(self.campaign_id) and self._free_slots() > 0:
                 self._queue_adjustment(attempt, decision)
@@ -556,22 +571,22 @@ class ExploreController:
             self._abandon(attempt, decision['reason'])
 
     def _queue_adjustment(self, attempt, decision):
-        if self._remaining_agent_jobs() < 4:
-            self._abandon(attempt, 'agent budget exhausted before adjustment')
-            return
         direction = self.state.get_direction(attempt['direction_id'])
+        optimization = self._phase('optimization')
         prompt = build_optimizer_prompt(
             self.campaign['objective'], direction['metadata'], adjust=True,
+            template=optimization['prompt'],
+            adjust_template=optimization['adjust_prompt'],
             memory=self._memory(), artifacts={'review': decision},
-            max_files=self.config['max_files'], max_lines=self.config['max_lines'],
+            max_files=optimization['max_files'],
+            max_lines=optimization['max_lines'],
         )
         number = attempt['adjustments'] + 1
-        job_id = self._queue_agent(
+        self._queue_agent(
             'adjust', prompt, attempt['worktree'], attempt['id'],
             attempt['direction_id'], metadata={'adjustment_number': number})
-        if job_id:
-            self.state.update_attempt(
-                attempt['id'], adjustments=number, status='active')
+        self.state.update_attempt(
+            attempt['id'], adjustments=number, status='active')
 
     def _reconcile_attempt_counters(self):
         numbers = {}
@@ -588,7 +603,9 @@ class ExploreController:
 
     def _advance_merge(self):
         merged = self.state.list_merge_requests(self.campaign_id, status='merged')
-        if len(merged) >= int(self.budgets['max_merges']):
+        if self._limit_reached(
+            self.budgets['max_accepted_attempts'], len(merged)
+        ):
             for request in self.state.list_merge_requests(
                 self.campaign_id, status='queued'):
                 attempt = self.state.get_attempt(request['attempt_id'])
@@ -624,29 +641,19 @@ class ExploreController:
         target = self.campaign['mainline_head']
         ok, output = rebase(attempt['worktree'], target)
         if not ok:
-            if self._remaining_agent_jobs() < 3:
-                self.state.complete_merge_request(
-                    request['id'], 'rejected',
-                    {'reason': 'agent budget cannot cover conflict and final reviews'})
-                self._abandon(
-                    attempt, 'agent budget cannot cover conflict and final reviews')
-                return
             prompt = build_rebase_prompt(
                 self.campaign['objective'],
                 self.state.get_direction(attempt['direction_id'])['metadata'],
+                template=self._phase('merge')['rebase_prompt'],
                 memory=self._memory(), artifacts={'git': output},
-                max_files=self.config['max_files'], max_lines=self.config['max_lines'],
+                max_files=self._phase('optimization')['max_files'],
+                max_lines=self._phase('optimization')['max_lines'],
             )
             self.state.update_merge_request(
                 request['id'], metadata={'stage': 'resolving'})
-            job_id = self._queue_agent(
+            self._queue_agent(
                 'rebase', prompt, attempt['worktree'], attempt['id'],
                 attempt['direction_id'], metadata={'merge_request_id': request['id']})
-            if job_id is None:
-                self.state.complete_merge_request(
-                    request['id'], 'rejected',
-                    {'reason': 'agent budget exhausted before conflict resolution'})
-                self._abandon(attempt, 'agent budget exhausted before conflict resolution')
             return
         head = git(attempt['worktree'], 'rev-parse', 'HEAD')
         attempt = self.state.update_attempt(attempt['id'], head=head)
@@ -655,20 +662,6 @@ class ExploreController:
         self._review_rebased(attempt, request['id'])
 
     def _finish_rebase(self, job, output):
-        if job['role'] == 'landing_rebase':
-            valid = job['status'] == 'success' and not rebase_in_progress(
-                self.config['mainline_worktree'])
-            if valid:
-                target = git(
-                    self.config['repo_root'], 'rev-parse',
-                    self.campaign['target_ref'])
-                valid = self._is_ancestor(
-                    self.config['mainline_worktree'], target, 'HEAD')
-            if not valid:
-                self.state.update_campaign(self.campaign_id, status='landing_failed')
-                return
-            self._queue_landing_review()
-            return
         request_id = job['metadata']['merge_request_id']
         attempt = self.state.get_attempt(job['attempt_id'])
         valid = job['status'] == 'success' and not rebase_in_progress(
@@ -692,7 +685,8 @@ class ExploreController:
                 attempt['worktree'], self.campaign['mainline_head']),
         }
         artifacts['protected_paths'] = protected_paths(
-            artifacts['changed_paths'], self.config['protected_paths'])
+            artifacts['changed_paths'],
+            self._phase('optimization')['protected_paths'])
         if self._has_validation():
             self._queue_validation(attempt, 'merge', artifacts, request_id)
         else:
@@ -758,11 +752,8 @@ class ExploreController:
             for item in self.state.list_attempts(self.campaign_id)
         )
         free = min(
-            self._free_slots(), max(0, int(self.budgets['parallel']) - active),
-            max(0, (self._remaining_agent_jobs() - 1) // 3))
+            self._free_slots(), max(0, int(self.budgets['parallel']) - active))
         if free <= 0:
-            if self._remaining_agent_jobs() < 5 and not self._active_mutation_jobs():
-                self.state.update_campaign(self.campaign_id, status='draining')
             return
         planned = self.state.list_directions(self.campaign_id, status='planned')
         for direction in planned[:free]:
@@ -774,31 +765,32 @@ class ExploreController:
             for item in self.state.list_attempts(self.campaign_id)
         )
         free = min(
-            self._free_slots(), max(0, int(self.budgets['parallel']) - active),
-            max(0, (self._remaining_agent_jobs() - 2) // 3))
+            self._free_slots(), max(0, int(self.budgets['parallel']) - active))
         if free <= 0 or self._active_job('planner'):
             return
         if self._has_validation() and 'baseline_validation' not in self.config:
             self._queue_baseline()
             return
         prompt = build_planner_prompt(
-            self.campaign['objective'], memory=self._memory(),
+            self.campaign['objective'],
+            template=self._phase('planning')['prompt'],
+            memory=self._memory(),
             tried_directions=self.state.list_directions(self.campaign_id),
-            direction_count=free, max_files=self.config['max_files'],
-            max_lines=self.config['max_lines'],
+            direction_count=free,
+            max_files=self._phase('optimization')['max_files'],
+            max_lines=self._phase('optimization')['max_lines'],
         )
-        job_id = self._queue_agent(
+        self._queue_agent(
             'planner', prompt, self.config['control_cwd'], control=True,
             metadata={'direction_count': free})
-        if job_id is None:
-            self.state.update_campaign(self.campaign_id, status='draining')
 
     def _queue_baseline(self):
         spec_path = Path(self.config['work_root']) / 'artifacts' / 'baseline.json'
         spec_path.parent.mkdir(parents=True, exist_ok=True)
         spec_path.write_text(json.dumps({
-            'checks': self.config.get('checks', []),
-            'score': self.config.get('score'), 'score_repeats': 3,
+            'checks': self._phase('validation').get('checks', []),
+            'score': self._phase('validation').get('score'),
+            'score_repeats': 3,
         }), encoding='utf-8')
         head = self.campaign['mainline_head']
         cwd = self._validation_worktree(head, 'baseline')
@@ -816,151 +808,74 @@ class ExploreController:
             raise
 
     def _advance_landing(self):
-        campaign = self.campaign
         if self._active_mutation_jobs() or not self.state.merge_queue_empty(self.campaign_id):
             return
-        if self._active_job('landing_rebase') or self._active_job('landing_reviewer'):
-            return
-        config = dict(self.config)
-        stage = config.get('landing_stage')
-        if stage == 'reviewed':
-            self._land_target()
-            return
-        ok, output = rebase(self.config['mainline_worktree'], campaign['target_ref'])
-        if not ok:
-            if self._remaining_agent_jobs() < 2:
-                self.state.update_campaign(
-                    self.campaign_id, status='landing_failed')
-                return
-            prompt = build_rebase_prompt(
-                campaign['objective'], {'hypothesis': 'land campaign mainline'},
-                memory=self._memory(), artifacts={'git': output},
-                max_files=self.config['max_files'], max_lines=self.config['max_lines'],
-            )
-            job_id = self._queue_agent(
-                'landing_rebase', prompt, self.config['mainline_worktree'],
-                control=False)
-            if job_id is None:
-                self.state.update_campaign(
-                    self.campaign_id, status='landing_failed')
-                return
-            self.state.update_campaign(self.campaign_id, status='landing')
-            return
-        self._queue_landing_review()
-
-    def _queue_landing_review(self):
-        head = git(self.config['mainline_worktree'], 'rev-parse', 'HEAD')
-        config = dict(self.config)
-        config['landing_head'] = head
-        self.state.update_campaign(
-            self.campaign_id, mainline_head=head, status='landing', config=config)
-        artifacts = {
-            'diff': diff(self.config['repo_root'], self.campaign['target_ref'], head),
-        }
-        if self._has_validation():
-            spec_path = Path(self.config['work_root']) / 'artifacts' / 'landing.json'
-            spec_path.parent.mkdir(parents=True, exist_ok=True)
-            spec_path.write_text(json.dumps({
-                'checks': self.config.get('checks', []),
-                'score': self.config.get('score'), 'score_repeats': 3,
-            }), encoding='utf-8')
-            cwd = self._validation_worktree(head, 'landing')
-            target_head = git(
-                self.config['repo_root'], 'rev-parse', self.campaign['target_ref'])
-            baseline_cwd = self._validation_worktree(
-                target_head, 'landing-baseline')
-            spec = json.loads(spec_path.read_text(encoding='utf-8'))
-            spec.update({
-                'baseline_cwd': str(baseline_cwd),
-                'score_seed': time.time_ns(),
-            })
-            spec_path.write_text(json.dumps(spec), encoding='utf-8')
-            try:
-                self._queue_job(
-                    'validation', [sys.executable, '-I', VALIDATION_SCRIPT,
-                                   '--spec', str(spec_path)], cwd,
-                    metadata={
-                        'phase': 'landing_validation', 'artifacts': artifacts,
-                        'validation_cwd': str(cwd), 'expected_head': head,
-                        'validation_worktrees': [
-                            {'cwd': str(cwd), 'head': head},
-                            {'cwd': str(baseline_cwd), 'head': target_head},
-                        ],
-                    })
-            except Exception:
-                self._remove_validation_worktree(cwd)
-                self._remove_validation_worktree(baseline_cwd)
-                raise
-            return
-        self._queue_landing_reviewer(artifacts)
-
-    def _queue_landing_reviewer(self, artifacts):
-        validation = artifacts.get('validation') or {'checks_passed': True}
-        artifacts['eligible'] = eligible(
-            validation, validation.get('baseline_score',
-                (self.config.get('baseline_validation') or {}).get('score')),
-            self.config.get('score_direction'),
-            0,
-        )
-        prompt = build_reviewer_prompt(
-            self.campaign['objective'], {'hypothesis': 'land campaign mainline'},
-            memory=self._memory(), artifacts=artifacts,
-            max_files=self.config['max_files'], max_lines=self.config['max_lines'],
-        )
-        job_id = self._queue_agent(
-            'landing_reviewer', prompt, self.config['control_cwd'],
-            control=True, metadata={'phase': 'landing', 'artifacts': artifacts})
-        if job_id is None:
-            self.state.update_campaign(self.campaign_id, status='landing_failed')
-
-    def _apply_landing_decision(self, decision, metadata):
-        if (self.campaign['status'] in {'completed', 'landing_failed'} or
-                self.config.get('landing_stage') == 'reviewed'):
-            return
-        if decision['decision'] != 'accept':
-            self.state.update_campaign(self.campaign_id, status='landing_failed')
-            return
-        config = dict(self.config)
-        config['landing_stage'] = 'reviewed'
-        self.state.update_campaign(self.campaign_id, config=config)
+        self._land_target()
 
     def _land_target(self):
         try:
             require_clean(self.config['repo_root'])
-        except BackendError:
-            self.state.update_campaign(self.campaign_id, status='waiting_to_land')
+        except BackendError as error:
+            self._manual_landing(str(error))
             return
         root = self.config['repo_root']
         branch = git(root, 'symbolic-ref', '--short', 'HEAD')
         if branch != self.campaign['target_ref']:
-            self.state.update_campaign(self.campaign_id, status='waiting_to_land')
+            self._manual_landing(
+                'target branch {} is not checked out'.format(
+                    self.campaign['target_ref']))
             return
         target_head = git(root, 'rev-parse', 'HEAD')
-        try:
-            git(root, 'merge-base', '--is-ancestor', target_head,
-                self.config['mainline_branch'])
-        except BackendError:
-            config = dict(self.config)
-            config.pop('landing_stage', None)
-            self.state.update_campaign(
-                self.campaign_id, status='landing', config=config)
+        mainline = self.config['mainline_branch']
+        if self._is_ancestor(root, mainline, target_head):
+            self._complete_landing(target_head)
             return
-        head = merge_ff(root, self.config['mainline_branch'])
+        if not self._is_ancestor(root, target_head, mainline):
+            self._manual_landing('target and campaign mainline have diverged')
+            return
+        self._complete_landing(merge_ff(root, mainline))
+
+    def _manual_landing(self, reason):
+        root = self.config['repo_root']
+        target = self.campaign['target_ref']
+        mainline = self.config['mainline_branch']
+        command = '{} && {}'.format(
+            shlex.join(['git', '-C', root, 'switch', target]),
+            shlex.join(['git', '-C', root, 'merge', mainline]),
+        )
+        manual = {
+            'reason': reason,
+            'command': command,
+            'message': 'Automatic fast-forward is not possible; merge manually.',
+        }
+        previous = self.config.get('manual_landing')
+        config = dict(self.config)
+        config['manual_landing'] = manual
+        self.state.update_campaign(
+            self.campaign_id, status='waiting_to_land', config=config)
+        if previous != manual:
+            self.state.emit(
+                self.campaign_id, 'campaign.manual_landing', manual,
+                outbox_topic='campaign.manual_landing',
+                dedupe_key='manual-landing:{}'.format(self.campaign_id))
+
+    def _complete_landing(self, head):
+        config = dict(self.config)
+        config.pop('manual_landing', None)
         self.state.update_campaign(
             self.campaign_id, target_head=head, mainline_head=head,
-            status='completed', finished_at=self._now())
+            status='completed', finished_at=self._now(), config=config)
         self._cleanup_mainline()
 
     def _queue_agent(
         self, role, prompt, cwd, attempt_id=None, direction_id=None,
         control=False, metadata=None,
     ):
-        if self._agent_jobs() >= int(self.budgets['max_agent_jobs']):
-            return None
-        argv = render_command(self.config['command'], prompt)
         data = dict(metadata or {})
+        phase = self._job_phase({'role': role, 'metadata': data})
+        argv = render_command(self._phase(phase)['command'], prompt)
         data['agent'] = True
-        if role in {'planner', 'reviewer', 'landing_reviewer'}:
+        if role in {'planner', 'reviewer'}:
             data['response_prompt'] = prompt
         if control:
             control_path = Path(self.config['control_cwd']) / '{}-{}'.format(
@@ -1016,7 +931,7 @@ class ExploreController:
     def _active_mutation_jobs(self):
         return any(
             job['status'] not in TERMINAL and job['role'] in
-            {'optimizer', 'adjust', 'validation', 'rebase', 'landing_rebase'}
+            {'optimizer', 'adjust', 'validation', 'rebase'}
             for job in self.state.list_jobs(campaign_id=self.campaign_id)
         )
 
@@ -1029,15 +944,6 @@ class ExploreController:
         )
         return max(0, capacity - claimed)
 
-    def _agent_jobs(self):
-        return sum(
-            bool(job['metadata'].get('agent'))
-            for job in self.state.list_jobs(campaign_id=self.campaign_id)
-        )
-
-    def _remaining_agent_jobs(self):
-        return max(0, int(self.budgets['max_agent_jobs']) - self._agent_jobs())
-
     def _queue_response_repair(self, job, error):
         metadata = dict(job['metadata'])
         if metadata.get('repair_count', 0) >= 1:
@@ -1046,13 +952,15 @@ class ExploreController:
         if not prompt:
             return False
         metadata['repair_count'] = 1
-        prompt += (
-            '\n\nYour previous response was invalid: {}. Return the required '
-            'TASKQ_JSON line and no trailing text.'.format(error))
-        return bool(self._queue_agent(
+        phase = self._phase(self._job_phase(job))
+        prompt = render_prompt(
+            phase['response_repair_prompt'],
+            original_prompt=prompt, error=str(error))
+        self._queue_agent(
             job['role'], prompt, self.config['control_cwd'],
             job.get('attempt_id'), job.get('direction_id'), control=True,
-            metadata=metadata))
+            metadata=metadata)
+        return True
 
     def _restore_control_worktree(self, job):
         cwd = job['metadata'].get('control_worktree')
@@ -1123,15 +1031,25 @@ class ExploreController:
 
     def _budget_exhausted(self):
         budgets = self.budgets
-        if self._agent_jobs() >= int(budgets['max_agent_jobs']):
-            return True
         merged = self.state.list_merge_requests(self.campaign_id, status='merged')
-        if len(merged) >= int(budgets['max_merges']):
+        if self._limit_reached(
+            budgets['max_accepted_attempts'], len(merged)
+        ):
             return True
-        return time.time() >= float(budgets['deadline'])
+        return self._deadline_reached()
+
+    @staticmethod
+    def _limit_reached(limit, value):
+        limit = int(limit)
+        return limit > 0 and value >= limit
+
+    def _deadline_reached(self):
+        deadline = self.budgets.get('deadline')
+        return deadline is not None and time.time() >= float(deadline)
 
     def _has_validation(self):
-        return bool(self.config.get('checks') or self.config.get('score'))
+        validation = self._phase('validation')
+        return bool(validation.get('checks') or validation.get('score'))
 
     def _memory(self):
         return {
@@ -1152,7 +1070,7 @@ class ExploreController:
                 outcome=decision['decision'],
                 provenance={'phase': phase, 'reviewer': True},
                 dedupe_key='review:{}:{}:{}'.format(
-                    self.campaign_id, attempt['id'] if attempt else 'landing', index),
+                    self.campaign_id, attempt['id'] if attempt else 'campaign', index),
             )
 
     def _promote_baseline(self, metadata):
@@ -1240,16 +1158,16 @@ def run(state_path, campaign_id):
     campaign = state.get_campaign(campaign_id)
     backend = TmuxBackend('tmux', _plain(campaign['config']['backend_config']))
     controller = ExploreController(state, backend, campaign_id)
-    interval = float(campaign['config'].get('controller_interval', 1))
+    interval = float(campaign['config']['phases']['controller']['interval'])
     try:
         while controller.campaign['status'] not in {
-            'completed', 'failed', 'landing_failed',
+            'completed', 'failed',
         }:
             controller.reconcile()
             time.sleep(interval)
     finally:
         if state.get_campaign(campaign_id)['status'] in {
-            'completed', 'failed', 'landing_failed',
+            'completed', 'failed',
         }:
             backend.unregister_controller(campaign_id)
         state.close()

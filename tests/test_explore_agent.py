@@ -6,8 +6,6 @@ from taskq.explore.agent import (
     AgentResponseError,
     build_optimizer_prompt,
     build_planner_prompt,
-    build_rebase_prompt,
-    build_reviewer_prompt,
     extract_taskq_json,
     fingerprint_direction,
     is_question_like,
@@ -16,6 +14,7 @@ from taskq.explore.agent import (
     parse_planner_response,
     parse_reviewer_response,
     render_command,
+    render_prompt,
 )
 
 
@@ -42,43 +41,19 @@ def test_command_template_requires_one_standalone_placeholder(command):
         parse_command_template(command)
 
 
-def test_prompt_builders_include_role_context_and_safety_contracts():
-    planner = build_planner_prompt(
-        'make polling faster',
-        memory=[{'claim': 'cache helped'}],
-        tried_directions=['cache metadata'],
-        direction_count=2,
-    )
-    optimizer = build_optimizer_prompt(
-        'make polling faster',
-        {'hypothesis': 'batch stat calls'},
-        artifacts={'review': 'promising'},
-        adjust=True,
-    )
-    reviewer = build_reviewer_prompt(
-        'make polling faster',
-        'batch stat calls',
-        artifacts={'diff': 'artifact-2'},
-    )
-    rebase = build_rebase_prompt(
-        'make polling faster',
-        'batch stat calls',
-        artifacts='conflicts: broker.py',
-    )
+def test_prompt_builders_accept_disabled_limits():
+    build_planner_prompt(
+        'optimize', template='$change_scope', max_files=0, max_lines=0)
+    build_optimizer_prompt(
+        'optimize', {}, template='$change_scope', max_files=0, max_lines=0)
+    with pytest.raises(ValueError, match='cannot be negative'):
+        build_optimizer_prompt(
+            'optimize', {}, template='$change_scope', max_files=-1)
 
-    assert 'exactly 2 direction(s)' in planner
-    assert 'structurally distinct' in planner
-    assert 'TASKQ_JSON:' in planner
-    assert 'Improve the existing attempt' in optimizer
-    assert 'current worktree' in optimizer
-    assert '5 files and 300 lines' in optimizer
-    assert 'worker claims as untrusted' in reviewer
-    assert ', '.join(sorted(REVIEW_DECISIONS)) not in reviewer
-    assert 'accept, adjust, abandon, evaluate_more, or stop' in reviewer
-    assert 'in-progress rebase' in rebase
-    assert 'do not abort it or create a merge commit' in rebase
-    for prompt in (planner, optimizer, reviewer, rebase):
-        assert 'Do not ask the user questions' in prompt or 'do not wait for or ask' in prompt
+
+def test_prompt_renderer_rejects_unknown_template_values():
+    with pytest.raises(ValueError, match='unknown value'):
+        render_prompt('$missing', objective='goal')
 
 
 def test_extract_taskq_json_requires_single_final_marker_line():

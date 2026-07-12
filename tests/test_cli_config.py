@@ -15,25 +15,31 @@ def test_default_config_exposes_tmux_and_ts():
     assert 'state_dir' not in config['backends']['tmux']
 
 
-def test_default_config_exposes_explore_limits():
+def test_default_config_exposes_explore_phases():
     config = tomlkit.loads(
         Path('taskq/default.toml').read_text(encoding='utf-8'))
     explore = config['explore']
 
+    assert set(explore) == {
+        'command', 'timeout', 'response_repair_prompt',
+        'planning', 'optimization', 'inspection', 'validation',
+        'merge', 'controller',
+    }
     assert explore['command'] == ['codex', 'exec', '{}']
-    assert explore['parallel'] == 4
-    assert explore['max_adjustments'] == 3
-    assert explore['max_agent_jobs'] == 32
-    assert explore['max_merges'] == 6
-    assert explore['max_wall_time'] == 8 * 60 * 60
-    assert explore['max_files'] == 5
-    assert explore['max_lines'] == 300
-    assert explore['protected'] == [
+    assert explore['timeout'] == 30 * 60
+    assert explore['optimization']['parallel'] == 4
+    assert explore['optimization']['max_adjustments'] == 3
+    assert explore['merge']['max_accepted_attempts'] == 0
+    assert explore['controller']['max_wall_time'] == 8 * 60 * 60
+    assert explore['optimization']['max_files'] == 0
+    assert explore['optimization']['max_lines'] == 300
+    assert explore['optimization']['protected'] == [
         '.tq/**', 'test/**', 'tests/**', 'benchmark/**', 'benchmarks/**',
     ]
-    assert explore['controller_interval'] == 5
-    assert explore['controller_timeout'] == 30
-    assert explore['action_timeout'] == 30 * 60
+    assert explore['controller']['interval'] == 5
+    assert explore['controller']['heartbeat_timeout'] == 30
+    assert all('timeout' not in explore[phase] for phase in (
+        'planning', 'optimization', 'inspection', 'validation', 'merge'))
 
 
 def test_load_config_uses_packaged_defaults_without_local_rc(tmp_path, monkeypatch):

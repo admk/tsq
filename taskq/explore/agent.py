@@ -6,6 +6,7 @@ import re
 import shlex
 import unicodedata
 from collections.abc import Mapping, Sequence
+from string import Template
 from typing import Any, Dict, List, Optional, Union
 
 
@@ -61,6 +62,7 @@ def render_command(
 def build_planner_prompt(
     objective: str,
     *,
+    template: str,
     memory: Any = None,
     tried_directions: Any = None,
     direction_count: int = 1,
@@ -69,29 +71,16 @@ def build_planner_prompt(
     **context: Any
 ) -> str:
     """Build a prompt for a non-mutating direction-planning turn."""
-    _validate_limits(max_files, max_lines)
     if direction_count < 1:
         raise ValueError('direction_count must be positive')
-    return _prompt(
-        'Plan {} distinct optimization work direction(s).'.format(direction_count),
-        objective,
+    return render_prompt(
+        template,
+        objective=objective,
         memory=memory,
         tried_directions=tried_directions,
         context=context,
-        rules=[
-            'Do not edit the repository; propose bounded work only.',
-            'Each direction must fit within {} changed files and {} changed lines.'.format(
-                max_files, max_lines
-            ),
-            'Use prior evidence and make every direction structurally distinct from '
-            'recorded successes, failures, and the other proposed directions.',
-            'Do not ask the user questions; make the best safe assumption.',
-            'Return exactly {} direction(s).'.format(direction_count),
-            'End with one single-line JSON object in this exact shape: '
-            'TASKQ_JSON: {"directions":[{"title":"...","hypothesis":"...",'
-            '"approach":"...","success_signal":"...",'
-            '"different_from":["..."]}]}',
-        ],
+        direction_count=direction_count,
+        change_scope=_change_scope(max_files, max_lines) or 'unlimited',
     )
 
 
@@ -99,6 +88,8 @@ def build_optimizer_prompt(
     objective: str,
     direction: Any,
     *,
+    template: str,
+    adjust_template: Optional[str] = None,
     memory: Any = None,
     artifacts: Any = None,
     adjust: bool = False,
@@ -107,30 +98,17 @@ def build_optimizer_prompt(
     **context: Any
 ) -> str:
     """Build a worktree mutation prompt for an initial or follow-up action."""
-    _validate_limits(max_files, max_lines)
-    action = (
-        'Improve the existing attempt according to the review evidence.'
-        if adjust else
-        'Implement one small optimization attempt in the current worktree.'
-    )
-    return _prompt(
-        action,
-        objective,
+    selected = adjust_template if adjust else template
+    if selected is None:
+        raise ValueError('adjustment prompt template is required')
+    return render_prompt(
+        selected,
+        objective=objective,
         direction=direction,
         memory=memory,
         artifacts=artifacts,
         context=context,
-        rules=[
-            'Work only in the current worktree and leave the repository in a '
-            'reviewable state.',
-            'Change at most {} files and {} lines; keep the action focused.'.format(
-                max_files, max_lines
-            ),
-            'Do not weaken tests, benchmarks, evaluators, fixtures, or campaign state.',
-            'Inspect and test what you can, but do not wait for or ask for user input.',
-            'If the exact approach is blocked, make the safest useful bounded progress '
-            'and explain the evidence in your final response.',
-        ],
+        change_scope=_change_scope(max_files, max_lines) or 'unlimited',
     )
 
 
@@ -138,6 +116,7 @@ def build_reviewer_prompt(
     objective: str,
     direction: Any,
     *,
+    template: str,
     memory: Any = None,
     artifacts: Any = None,
     max_files: int = 5,
@@ -145,30 +124,14 @@ def build_reviewer_prompt(
     **context: Any
 ) -> str:
     """Build a non-mutating prompt for an independent attempt review."""
-    _validate_limits(max_files, max_lines)
-    return _prompt(
-        'Independently inspect the completed optimization action.',
-        objective,
+    return render_prompt(
+        template,
+        objective=objective,
         direction=direction,
         memory=memory,
         artifacts=artifacts,
         context=context,
-        rules=[
-            'Treat worker claims as untrusted; base the decision on the diff, Git '
-            'state, logs, and trusted evaluator artifacts.',
-            'Never accept changes that exceed {} files or {} lines, alter protected '
-            'inputs, fail a required check, or miss a required score threshold.'.format(
-                max_files, max_lines
-            ),
-            'Choose exactly one decision: accept, adjust, abandon, evaluate_more, or '
-            'stop. Use adjust only for a promising bounded follow-up.',
-            'Do not ask the user questions and do not edit the repository.',
-            'Any next direction must be distinct from recorded directions.',
-            'End with one single-line JSON object in this exact shape: '
-            'TASKQ_JSON: {"decision":"adjust","reason":"...",'
-            '"evidence":["artifact-id"],"memory_updates":[],'
-            '"next_direction":null}',
-        ],
+        change_scope=_change_scope(max_files, max_lines) or 'unlimited',
     )
 
 
@@ -176,6 +139,7 @@ def build_rebase_prompt(
     objective: str,
     direction: Any,
     *,
+    template: str,
     memory: Any = None,
     artifacts: Any = None,
     max_files: int = 5,
@@ -183,25 +147,32 @@ def build_rebase_prompt(
     **context: Any
 ) -> str:
     """Build a worktree prompt for resolving a rebase conflict."""
-    _validate_limits(max_files, max_lines)
-    return _prompt(
-        'Resolve the in-progress rebase in the current attempt worktree.',
-        objective,
+    return render_prompt(
+        template,
+        objective=objective,
         direction=direction,
         memory=memory,
         artifacts=artifacts,
         context=context,
-        rules=[
-            'Inspect Git status and resolve only the current conflicts, preserving the '
-            'target branch behavior and the useful intent of this optimization.',
-            'Complete the existing rebase; do not abort it or create a merge commit.',
-            'Keep resolution changes within {} files and {} lines unless the existing '
-            'conflict itself already exceeds that boundary.'.format(max_files, max_lines),
-            'Do not weaken tests, benchmarks, evaluators, fixtures, or campaign state.',
-            'Do not ask the user questions; make the safest resolution supported by '
-            'the repository and artifacts.',
-        ],
+        change_scope=_change_scope(max_files, max_lines) or 'unlimited',
     )
+
+
+def render_prompt(template: str, **values: Any) -> str:
+    """Render a TOML-owned prompt template with serialized context values."""
+    if not _nonempty_text(template):
+        raise ValueError('prompt template must be non-empty text')
+    if 'objective' in values and not _nonempty_text(values['objective']):
+        raise ValueError('objective must be non-empty text')
+    formatted = {key: _format_value(value) for key, value in values.items()}
+    try:
+        return Template(template).substitute(formatted).strip()
+    except KeyError as error:
+        raise ValueError(
+            'prompt template references unknown value ${}'.format(error.args[0])
+        ) from error
+    except ValueError as error:
+        raise ValueError('invalid prompt template: {}'.format(error)) from error
 
 
 def extract_taskq_json(output: str) -> Dict[str, Any]:
@@ -340,34 +311,6 @@ def fingerprint_direction(direction: Any) -> str:
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
 
 
-def _prompt(
-    role: str,
-    objective: str,
-    *,
-    direction: Any = None,
-    memory: Any = None,
-    tried_directions: Any = None,
-    artifacts: Any = None,
-    context: Optional[Dict[str, Any]] = None,
-    rules: Sequence[str]
-) -> str:
-    if not _nonempty_text(objective):
-        raise ValueError('objective must be non-empty text')
-    sections = [role, '', 'Objective:', objective.strip()]
-    for title, value in (
-        ('Direction', direction),
-        ('Relevant memory', memory),
-        ('Previously tried directions', tried_directions),
-        ('Artifacts and evidence', artifacts),
-        ('Additional context', context),
-    ):
-        if value not in (None, {}, [], ()):
-            sections.extend(('', '{}:'.format(title), _format_value(value)))
-    sections.extend(('', 'Rules:'))
-    sections.extend('- ' + rule for rule in rules)
-    return '\n'.join(sections)
-
-
 def _format_value(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()
@@ -384,5 +327,17 @@ def _nonempty_text(value: Any) -> bool:
 
 
 def _validate_limits(max_files: int, max_lines: int) -> None:
-    if max_files < 1 or max_lines < 1:
-        raise ValueError('change limits must be positive')
+    if max_files < 0 or max_lines < 0:
+        raise ValueError('change limits cannot be negative')
+
+
+def _change_scope(max_files: int, max_lines: int) -> str:
+    _validate_limits(max_files, max_lines)
+    limits = []
+    if max_files:
+        limits.append('{} file{}'.format(
+            max_files, '' if max_files == 1 else 's'))
+    if max_lines:
+        limits.append('{} line{}'.format(
+            max_lines, '' if max_lines == 1 else 's'))
+    return ' and '.join(limits)

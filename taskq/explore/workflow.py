@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..backends import git_ref as git_ref_utils
 from ..backends.base import BackendError
-from .agent import parse_command_template
+from .agent import parse_command_template, render_prompt
 from .controller import ExploreController
 from .git import campaign_id, diff, ensure_local_exclude, repository, require_clean
 from .state import ExploreState
@@ -41,6 +41,24 @@ def _option(overrides, config, name, default=None, config_name=None):
     if value is not None:
         return value
     return config.get(config_name or name, default)
+
+
+def _required_text(config, name, phase):
+    value = config.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise BackendError(
+            'explore.{}.{} must be non-empty text'.format(phase, name))
+    try:
+        render_prompt(value, **{
+            'objective': 'objective', 'direction': {}, 'memory': {},
+            'tried_directions': [], 'artifacts': {}, 'context': {},
+            'direction_count': 1, 'change_scope': 'unlimited',
+            'original_prompt': 'prompt', 'error': 'error',
+        })
+    except ValueError as error:
+        raise BackendError(
+            'invalid explore.{}.{}: {}'.format(phase, name, error)) from error
+    return value
 
 
 class ExploreWorkflow:
@@ -78,13 +96,31 @@ class ExploreWorkflow:
         require_clean(root)
         ensure_local_exclude(root)
         explore = _plain(self.config.get('explore', {}))
+        phase_names = (
+            'planning', 'optimization', 'inspection', 'validation',
+            'merge', 'controller')
+        common = {
+            key: value for key, value in explore.items()
+            if key not in phase_names
+        }
+        phases = {
+            name: dict(common, **dict(explore.get(name) or {}))
+            for name in phase_names
+        }
         try:
-            command = parse_command_template(
-                _option(overrides, explore, 'command'))
+            command_override = overrides.get('command')
+            commands = {
+                name: parse_command_template(
+                    command_override if command_override is not None else
+                    phases[name].get('command'))
+                for name in (
+                    'planning', 'optimization', 'inspection', 'merge')
+            }
         except (TypeError, ValueError) as error:
             raise BackendError(str(error)) from error
-        score = _option(overrides, explore, 'score')
-        score_direction = _option(overrides, explore, 'score_direction')
+        validation = phases['validation']
+        score = _option(overrides, validation, 'score')
+        score_direction = _option(overrides, validation, 'score_direction')
         if score and score_direction not in {'min', 'max'}:
             raise BackendError('--score-direction min|max is required with --score')
         identifier = campaign_id(overrides.get('name') or objective)
@@ -105,44 +141,50 @@ class ExploreWorkflow:
             workspace = git_ref_utils.create_branch_worktree(
                 root, mainline_branch, mainline_worktree, target_head)
             try:
-                parallel = int(_option(overrides, explore, 'parallel', 4))
+                optimization = phases['optimization']
+                controller = phases['controller']
+                merge = phases['merge']
+                parallel = int(_option(overrides, optimization, 'parallel', 4))
                 max_adjustments = int(
-                    _option(overrides, explore, 'max_adjustments', 3))
-                max_agent_jobs = int(
-                    _option(overrides, explore, 'max_agent_jobs', 32))
-                max_merges = int(_option(overrides, explore, 'max_merges', 6))
+                    _option(overrides, optimization, 'max_adjustments', 3))
+                max_accepted_attempts = int(_option(
+                    overrides, merge, 'max_accepted_attempts', 6))
                 max_time = _duration(_option(
-                    overrides, explore, 'max_time', 28800, 'max_wall_time'))
-                max_files = int(_option(overrides, explore, 'max_files', 5))
-                max_lines = int(_option(overrides, explore, 'max_lines', 300))
+                    overrides, controller, 'max_time', 28800, 'max_wall_time'))
+                max_files = int(_option(overrides, optimization, 'max_files', 5))
+                max_lines = int(_option(overrides, optimization, 'max_lines', 300))
                 min_improvement = float(_option(
-                    overrides, explore, 'min_improvement', 0))
-                controller_interval = float(explore.get('controller_interval', 5))
-                controller_timeout = float(explore.get('controller_timeout', 30))
-                action_timeout = float(explore.get('action_timeout', 1800))
+                    overrides, validation, 'min_improvement', 0))
+                controller_interval = float(controller.get('interval', 5))
+                controller_timeout = float(controller.get('heartbeat_timeout', 30))
+                timeouts = {
+                    name: float(phases[name].get('timeout', 1800))
+                    for name in (
+                        'planning', 'optimization', 'inspection', 'validation',
+                        'merge')
+                }
             except (TypeError, ValueError) as error:
                 raise BackendError(
                     'invalid exploration setting: {}'.format(error)) from error
-            if min(
-                parallel, max_adjustments, max_agent_jobs, max_merges,
-                max_time, max_files, max_lines, controller_interval,
-                controller_timeout,
-                action_timeout,
-            ) <= 0:
-                raise BackendError('exploration limits must be positive')
+            if min([parallel, controller_interval, controller_timeout] +
+                   list(timeouts.values())) <= 0:
+                raise BackendError(
+                    'parallelism and controller limits must be positive')
+            if min(max_adjustments, max_accepted_attempts, max_time,
+                   max_files, max_lines) < 0:
+                raise BackendError('exploration maximums cannot be negative')
             if min_improvement < 0:
                 raise BackendError('minimum improvement cannot be negative')
             budgets = {
                 'parallel': parallel,
                 'max_adjustments': max_adjustments,
-                'max_agent_jobs': max_agent_jobs,
-                'max_merges': max_merges,
+                'max_accepted_attempts': max_accepted_attempts,
                 'max_wall_time': max_time,
-                'deadline': time.time() + max_time,
+                'deadline': time.time() + max_time if max_time else None,
             }
-            protected = list(explore.get('protected', []))
+            protected = list(optimization.get('protected', []))
             protected.extend(overrides.get('protect') or [])
-            checks = list(_option(overrides, explore, 'checks', []))
+            checks = list(_option(overrides, validation, 'checks', []))
             for command_text in checks + ([score] if score else []):
                 for token in shlex.split(command_text):
                     path = (Path(root) / token).resolve()
@@ -160,17 +202,59 @@ class ExploreWorkflow:
                 'control_cwd': str(control_cwd),
                 'heartbeat_file': str(heartbeat_file),
                 'backend_config': _plain(self.backend.config),
-                'command': command,
-                'checks': checks,
-                'score': score,
-                'score_direction': score_direction,
-                'min_improvement': min_improvement,
-                'protected_paths': list(dict.fromkeys(protected)),
-                'max_files': max_files,
-                'max_lines': max_lines,
-                'controller_interval': controller_interval,
-                'controller_timeout': controller_timeout,
-                'action_timeout': action_timeout,
+                'phases': {
+                    'planning': {
+                        'command': commands['planning'],
+                        'prompt': _required_text(
+                            phases['planning'], 'prompt', 'planning'),
+                        'response_repair_prompt': _required_text(
+                            phases['planning'], 'response_repair_prompt',
+                            'planning'),
+                        'timeout': timeouts['planning'],
+                    },
+                    'optimization': {
+                        'command': commands['optimization'],
+                        'prompt': _required_text(
+                            optimization, 'prompt', 'optimization'),
+                        'adjust_prompt': _required_text(
+                            optimization, 'adjust_prompt', 'optimization'),
+                        'max_files': max_files,
+                        'max_lines': max_lines,
+                        'protected_paths': list(dict.fromkeys(protected)),
+                        'timeout': timeouts['optimization'],
+                    },
+                    'inspection': {
+                        'command': commands['inspection'],
+                        'prompt': _required_text(
+                            phases['inspection'], 'prompt', 'inspection'),
+                        'response_repair_prompt': _required_text(
+                            phases['inspection'], 'response_repair_prompt',
+                            'inspection'),
+                        'timeout': timeouts['inspection'],
+                    },
+                    'validation': {
+                        'checks': checks,
+                        'score': score,
+                        'score_direction': score_direction,
+                        'min_improvement': min_improvement,
+                        'timeout': timeouts['validation'],
+                    },
+                    'merge': {
+                        'command': commands['merge'],
+                        'prompt': _required_text(
+                            merge, 'review_prompt', 'merge'),
+                        'rebase_prompt': _required_text(
+                            merge, 'rebase_prompt', 'merge'),
+                        'response_repair_prompt': _required_text(
+                            merge, 'response_repair_prompt', 'merge'),
+                        'timeout': timeouts['merge'],
+                    },
+                    'controller': {
+                        'interval': controller_interval,
+                        'heartbeat_timeout': controller_timeout,
+                        'max_wall_time': max_time,
+                    },
+                },
                 'workspace': workspace,
             }
             state.create_campaign(
@@ -183,7 +267,7 @@ class ExploreWorkflow:
             ]
             self.backend.register_controller(
                 identifier, argv, root, heartbeat_file,
-                campaign_config['controller_timeout'])
+                campaign_config['phases']['controller']['heartbeat_timeout'])
             controller_registered = True
             ExploreController(state, self.backend, identifier).reconcile()
             return state.get_campaign(identifier)
@@ -226,6 +310,7 @@ class ExploreWorkflow:
             value = self._latest(state, campaign)
             return {
                 'campaign': _public_campaign(value),
+                'manual_landing': value['config'].get('manual_landing'),
                 'counts': state.counts(value['id']),
                 'attempts': state.list_attempts(value['id']),
                 'merge_requests': state.list_merge_requests(value['id']),
@@ -261,7 +346,7 @@ class ExploreWorkflow:
         with self._open(root) as state:
             value = self._latest(state, campaign)
             current = value['status']
-            if current in {'completed', 'failed', 'landing_failed'}:
+            if current in {'completed', 'failed'}:
                 raise BackendError(
                     'exploration campaign {} is {}'.format(value['id'], current))
             if status == current:
@@ -292,4 +377,5 @@ class ExploreWorkflow:
         ]
         self.backend.register_controller(
             campaign['id'], argv, config['repo_root'],
-            config['heartbeat_file'], config['controller_timeout'])
+            config['heartbeat_file'],
+            config['phases']['controller']['heartbeat_timeout'])

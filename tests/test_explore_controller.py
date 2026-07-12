@@ -1,3 +1,4 @@
+import datetime
 import json
 import subprocess
 import time
@@ -149,8 +150,7 @@ def campaign(tmp_path):
         budgets={
             'parallel': 2,
             'max_adjustments': 2,
-            'max_agent_jobs': 20,
-            'max_merges': 5,
+            'max_accepted_attempts': 5,
             'deadline': time.time() + 3600,
         },
         config={
@@ -160,14 +160,38 @@ def campaign(tmp_path):
             'mainline_worktree': str(mainline),
             'control_cwd': str(control_cwd),
             'heartbeat_file': str(work_root / 'heartbeat'),
-            'command': ['fake-agent', '{}'],
-            'checks': [],
-            'score': None,
-            'score_direction': None,
-            'min_improvement': 0,
-            'protected_paths': [],
-            'max_files': 5,
-            'max_lines': 300,
+            'phases': {
+                'optimization': {
+                    'command': ['fake-agent', '{}'], 'timeout': 1800,
+                    'prompt': '$objective $direction $context',
+                    'adjust_prompt': '$objective $artifacts $context',
+                    'protected_paths': [], 'max_files': 5, 'max_lines': 300,
+                },
+                'planning': {
+                    'command': ['fake-agent', '{}'], 'timeout': 1800,
+                    'prompt': '$objective $direction_count $context',
+                    'response_repair_prompt': '$original_prompt $error',
+                },
+                'inspection': {
+                    'command': ['fake-agent', '{}'], 'timeout': 1800,
+                    'prompt': '$objective $artifacts $context',
+                    'response_repair_prompt': '$original_prompt $error',
+                },
+                'validation': {
+                    'checks': [], 'score': None, 'score_direction': None,
+                    'min_improvement': 0, 'timeout': 1800,
+                },
+                'merge': {
+                    'command': ['fake-agent', '{}'], 'timeout': 1800,
+                    'prompt': '$objective $artifacts $context',
+                    'rebase_prompt': '$objective $artifacts $context',
+                    'response_repair_prompt': '$original_prompt $error',
+                },
+                'controller': {
+                    'interval': 5, 'heartbeat_timeout': 30,
+                    'max_wall_time': 3600,
+                },
+            },
             'workspace': workspace,
         },
     )
@@ -202,6 +226,40 @@ def test_terminal_mutation_dispatches_one_immediate_review(campaign, terminal_st
     assert len(reviews) == 1
     assert reviews[0]['metadata']['artifacts']['job_status'] == terminal_status
     assert campaign.state.get_attempt(attempt['id'])['status'] == 'reviewing'
+
+
+@pytest.mark.parametrize(('role', 'metadata', 'phase'), [
+    ('planner', {}, 'planning'),
+    ('optimizer', {}, 'optimization'),
+    ('reviewer', {'phase': 'inspection'}, 'inspection'),
+    ('reviewer', {'phase': 'merge'}, 'merge'),
+    ('rebase', {}, 'merge'),
+])
+def test_agent_roles_use_their_phase_command(campaign, role, metadata, phase):
+    config = dict(campaign.controller.config)
+    config['phases'] = dict(config['phases'])
+    config['phases'][phase] = dict(config['phases'][phase])
+    config['phases'][phase]['command'] = [phase + '-agent', '{}']
+    campaign.state.update_campaign('c1', config=config)
+
+    campaign.controller._queue_agent(
+        role, 'prompt', campaign.mainline, metadata=metadata)
+
+    assert campaign.backend.add_calls[-1]['command'] == phase + '-agent prompt'
+
+
+def test_job_timeout_comes_from_its_phase(campaign):
+    config = dict(campaign.controller.config)
+    config['phases'] = dict(config['phases'])
+    for phase, timeout in (('planning', 1), ('optimization', 60)):
+        config['phases'][phase] = dict(config['phases'][phase], timeout=timeout)
+    campaign.state.update_campaign('c1', config=config)
+    started = datetime.datetime.now() - datetime.timedelta(seconds=2)
+
+    assert campaign.controller._overdue(
+        {'start_time': started}, {'role': 'planner', 'metadata': {}})
+    assert not campaign.controller._overdue(
+        {'start_time': started}, {'role': 'optimizer', 'metadata': {}})
 
 
 def test_mutation_retry_recognizes_snapshot_from_crashed_controller(campaign):
@@ -284,7 +342,9 @@ def test_controller_adopts_backend_job_lost_before_sqlite_insert(campaign):
 
 def test_system_gate_overrides_reviewer_accept(campaign):
     config = dict(campaign.controller.config)
-    config['protected_paths'] = ['app.txt']
+    config['phases'] = dict(config['phases'])
+    config['phases']['optimization'] = dict(config['phases']['optimization'])
+    config['phases']['optimization']['protected_paths'] = ['app.txt']
     campaign.state.update_campaign('c1', config=config)
     attempt = campaign.attempt('protected')
     Path(attempt['worktree'], 'app.txt').write_text('shortcut\n', encoding='utf-8')
@@ -473,14 +533,6 @@ def test_campaign_runs_from_planning_through_landing(campaign):
 
     campaign.state.update_campaign('c1', status='draining')
     campaign.controller.reconcile()
-    landing_review = campaign.state.list_jobs(
-        campaign_id='c1', role='landing_reviewer')[0]
-    campaign.backend.finish(
-        landing_review['backend_job_id'],
-        'TASKQ_JSON: {"decision":"accept","reason":"ready to land"}',
-    )
-    campaign.controller.reconcile()
-    campaign.controller.reconcile()
 
     completed = campaign.state.get_campaign('c1')
     assert completed['status'] == 'completed'
@@ -493,7 +545,7 @@ def test_campaign_runs_from_planning_through_landing(campaign):
     ) == ''
     assert campaign.backend.unregistered == ['c1']
     assert [item['phase'] for item in campaign.state.list_decisions('c1')] == [
-        'inspection', 'merge', 'landing',
+        'inspection', 'merge',
     ]
 
 
@@ -527,36 +579,92 @@ def test_adjustment_is_deferred_while_merge_queue_is_nonempty(campaign):
     assert campaign.state.list_jobs(campaign_id='c1', role='adjust') == []
 
 
-@pytest.mark.parametrize('budget_update', [
-    {'max_agent_jobs': 0},
-    {'max_merges': 0},
-    {'deadline': 0},
-])
-def test_exhausted_budget_enters_draining_without_allocating(campaign, budget_update):
+def test_expired_deadline_enters_landing_without_allocating(campaign):
     budgets = dict(campaign.controller.budgets)
-    budgets.update(budget_update)
+    budgets['deadline'] = 0
     campaign.state.update_campaign('c1', budgets=budgets)
 
     campaign.controller.reconcile()
 
-    status = campaign.state.get_campaign('c1')['status']
-    if 'deadline' in budget_update:
-        assert status == 'landing'
-        assert campaign.backend.add_calls[-1]['metadata']['role'] == 'landing_reviewer'
-    else:
-        assert status == 'draining'
-        assert campaign.backend.add_calls == []
-
-
-def test_budget_too_small_for_worker_review_and_landing_drains(campaign):
-    budgets = dict(campaign.controller.budgets)
-    budgets['max_agent_jobs'] = 2
-    campaign.state.update_campaign('c1', budgets=budgets)
-
-    campaign.controller.reconcile()
-
-    assert campaign.state.get_campaign('c1')['status'] == 'draining'
+    assert campaign.state.get_campaign('c1')['status'] == 'completed'
     assert campaign.backend.add_calls == []
+
+
+def test_diverged_target_waits_for_manual_merge_without_landing_agent(campaign):
+    Path(campaign.mainline, 'campaign.txt').write_text(
+        'campaign\n', encoding='utf-8')
+    mainline_head, _ = snapshot(campaign.mainline, 'campaign change')
+    campaign.state.update_campaign('c1', mainline_head=mainline_head)
+    Path(campaign.repo, 'target.txt').write_text('target\n', encoding='utf-8')
+    snapshot(campaign.repo, 'target change')
+    campaign.state.update_campaign('c1', status='draining')
+
+    campaign.controller.reconcile()
+
+    waiting = campaign.state.get_campaign('c1')
+    manual = waiting['config']['manual_landing']
+    assert waiting['status'] == 'waiting_to_land'
+    assert manual['reason'] == 'target and campaign mainline have diverged'
+    assert 'switch main' in manual['command']
+    assert 'merge tq/explore/c1/mainline' in manual['command']
+    assert len(campaign.state.list_outbox(
+        'c1', topic='campaign.manual_landing')) == 1
+    assert all(not job['role'].startswith('landing')
+               for job in campaign.state.list_jobs(campaign_id='c1'))
+
+    _run(campaign.repo, 'merge', campaign.controller.config['mainline_branch'])
+    campaign.controller.reconcile()
+
+    assert campaign.state.get_campaign('c1')['status'] == 'completed'
+
+
+def test_zero_accepted_attempt_limit_allows_merge_queueing(campaign):
+    budgets = dict(campaign.controller.budgets)
+    budgets['max_accepted_attempts'] = 0
+    campaign.state.update_campaign('c1', budgets=budgets)
+    attempt = campaign.attempt('unlimited-merges')
+    campaign.queue_review(attempt, decision='accept')
+
+    campaign.controller.reconcile()
+
+    assert campaign.state.get_campaign('c1')['status'] == 'active'
+    requests = campaign.state.list_merge_requests('c1')
+    assert [request['attempt_id'] for request in requests] == [attempt['id']]
+
+
+def test_zero_adjustment_limit_allows_adjustment(campaign):
+    budgets = dict(campaign.controller.budgets)
+    budgets['max_adjustments'] = 0
+    campaign.state.update_campaign('c1', budgets=budgets)
+    attempt = campaign.attempt('unlimited-adjustments')
+    campaign.queue_review(attempt, decision='adjust')
+
+    campaign.controller.reconcile()
+
+    jobs = campaign.state.list_jobs(campaign_id='c1', role='adjust')
+    assert len(jobs) == 1
+    assert jobs[0]['attempt_id'] == attempt['id']
+
+
+def test_zero_change_limits_disable_size_gate(campaign):
+    config = dict(campaign.controller.config)
+    config['phases'] = dict(config['phases'])
+    config['phases']['optimization'] = dict(config['phases']['optimization'])
+    config['phases']['optimization'].update({'max_files': 0, 'max_lines': 0})
+    campaign.state.update_campaign('c1', config=config)
+    attempt = campaign.attempt('unlimited-change')
+    Path(attempt['worktree'], 'app.txt').write_text('candidate\n', encoding='utf-8')
+    job_id = campaign.controller._queue_agent(
+        'optimizer', 'optimize', attempt['worktree'],
+        attempt['id'], attempt['direction_id'])
+    backend_id = int(campaign.state.get_job(job_id)['backend_job_id'])
+    campaign.backend.finish(backend_id, 'completed change')
+
+    campaign.controller.reconcile()
+
+    review = campaign.state.list_jobs(campaign_id='c1', role='reviewer')[0]
+    assert review['metadata']['artifacts']['limit_violation'] is False
+    assert review['metadata']['artifacts']['eligible'] is True
 
 
 def test_deadline_cancels_queued_speculation_but_keeps_reserved_review(campaign):

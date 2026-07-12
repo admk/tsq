@@ -127,6 +127,25 @@ tq explore resume
 tq explore stop
 ```
 
+Configuration is divided by execution phase:
+
+| Phase | Responsibility |
+| --- | --- |
+| `planning` | Generate distinct directions without editing code. |
+| `optimization` | Create and adjust candidate changes in worktrees. |
+| `inspection` | Independently review completed attempts. |
+| `validation` | Run trusted checks and comparative scoring. |
+| `merge` | Rebase, revalidate, review, and serialize accepted attempts. |
+| `controller` | Schedule work, enforce the campaign deadline, and supervise heartbeats. |
+
+Agent instructions are TOML templates rather than Python constants. Configure
+`planning.prompt`, `optimization.prompt`, `optimization.adjust_prompt`,
+`inspection.prompt`, `merge.review_prompt`, and `merge.rebase_prompt`.
+Templates use `$name` placeholders such as `$objective`, `$direction`,
+`$memory`, `$artifacts`, `$context`, `$direction_count`, and `$change_scope`;
+write `$$` for a literal dollar sign. The shared
+`explore.response_repair_prompt` controls structured-response repair turns.
+
 Each attempt runs the configured agent in its own branch-backed worktree.
 Actual concurrency is capped by both `explore.parallel` and the selected
 queue's available slots.
@@ -140,8 +159,8 @@ merged one at a time into a campaign mainline; conflicts are returned to an
 agent in the attempt worktree. While this queue is non-empty, existing work
 may finish and be reviewed, but no new direction starts. Once it drains,
 planning resumes from the updated mainline. The final mainline is
-automatically rebased and fast-forwarded onto the original branch when that
-checkout is clean.
+fast-forwarded automatically when safe. If the target has diverged, taskq
+prints the manual merge command and waits for the user to resolve conflicts.
 
 Campaign state and evidence are durable. Confirmed results become persistent
 project memory so later directions can avoid failed approaches and build on
@@ -178,17 +197,31 @@ slots = 1
 
 [explore]
 command = ["codex", "exec", "{}"]
+timeout = 1800
+
+[explore.planning]
+
+[explore.optimization]
 parallel = 4
+# Set any max_* value to 0 to disable that cap.
 max_adjustments = 3
-max_agent_jobs = 32
-max_merges = 6
-max_wall_time = 28800
-max_files = 5
+max_files = 0
 max_lines = 300
 protected = [".tq/**", "test/**", "tests/**", "benchmark/**", "benchmarks/**"]
-controller_interval = 5
-controller_timeout = 30
-action_timeout = 1800
+
+[explore.inspection]
+
+[explore.validation]
+checks = []
+min_improvement = 0.0
+
+[explore.merge]
+max_accepted_attempts = 0
+
+[explore.controller]
+max_wall_time = 28800
+interval = 5
+heartbeat_timeout = 30
 
 [env]
 OMP_NUM_THREADS = "1"
@@ -220,7 +253,7 @@ Useful config keys:
 | `socket` | Shared backend socket name. For tmux this selects the socket file under the taskq cache directory. |
 | `[alloc].gpus` | Default GPUs required per new job. |
 | `[alloc].slots` | Default slots required per new job. |
-| `[explore]` | Agent command, concurrency, safety limits, protected paths, and controller timing for autonomous campaigns. |
+| `[explore.<phase>]` | Phase-specific agent commands, timeouts, validation, safety limits, and controller timing for autonomous campaigns. |
 | `[env]` | Environment variables exported into jobs. |
 | `[backends.tmux].gpu_free_perc` | GPU memory-free threshold used by the tmux broker when allocating GPUs. |
 | `[queues.<name>]` | Per-queue overrides. Use `tq -Q <name> ...` to select a queue. |

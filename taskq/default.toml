@@ -34,17 +34,121 @@ gpus = 0
 slots = 1
 
 # Autonomous optimization campaigns. `tq explore` is supported only by the
-# tmux backend. The command is argv, and the standalone `{}` element is
-# replaced with each role-specific agent prompt.
+# tmux backend. Every `max_*` setting accepts 0 to disable that cap.
 [explore]
-command = ["codex", "exec", "{}"]
+# Non-table options here are inherited by every phase. A value in an
+# [explore.<phase>] table overrides the common value for that phase.
+# Agent argv. Exactly one standalone `{}` item is replaced with the prompt.
+command = ["codex", "exec", "--ephemeral", "{}"]
+# Default maximum runtime in seconds for one phase job.
+timeout = 1800
+# Used after a planner or reviewer returns an invalid structured response.
+response_repair_prompt = '''
+$original_prompt
+
+Your previous response was invalid: $error.
+Return the required TASKQ_JSON line and no trailing text.
+'''
+
+# Generate distinct optimization directions without modifying the repository.
+[explore.planning]
+command = ["codex", "exec", "--ephemeral", "--sandbox", "read-only", "{}"]
+prompt = '''
+Plan $direction_count distinct optimization work direction(s).
+
+Objective:
+$objective
+
+Relevant memory:
+$memory
+
+Previously tried directions:
+$tried_directions
+
+Additional context:
+$context
+
+Configured change scope: $change_scope.
+
+Rules:
+- Do not edit the repository; propose bounded work only.
+- Keep each direction small, focused, and reviewable.
+- Use prior evidence and make every direction structurally distinct from recorded successes, failures, and the other proposed directions.
+- Do not ask the user questions; make the best safe assumption.
+- Return exactly $direction_count direction(s).
+- End with one single-line JSON object in this exact shape: TASKQ_JSON: {"directions":[{"title":"...","hypothesis":"...","approach":"...","success_signal":"...","different_from":["..."]}]}
+  - title: a short human-readable label for the direction.
+  - hypothesis: a falsifiable explanation of why this direction should improve the objective.
+  - approach: the concrete, bounded implementation strategy to try.
+  - success_signal: the observable check, metric, or evidence that would support the hypothesis.
+  - different_from: brief labels for prior or sibling approaches this direction is structurally different from; use an empty list only when there is no meaningful comparator.
+'''
+
+# Create and adjust candidate changes in isolated worktrees.
+[explore.optimization]
+command = ["codex", "exec", "--ephemeral", "--sandbox", "workspace-write", "{}"]
+prompt = '''
+Implement one small optimization attempt in the current worktree.
+
+Objective:
+$objective
+
+Direction:
+$direction
+
+Relevant memory:
+$memory
+
+Artifacts and evidence:
+$artifacts
+
+Additional context:
+$context
+
+Configured hard change cap: $change_scope.
+
+Rules:
+- Work only in the current worktree and leave the repository in a reviewable state.
+- Keep the action focused and reviewable, including when the configured cap is unlimited.
+- Do not weaken tests, benchmarks, evaluators, fixtures, or campaign state.
+- Inspect and test what you can, but do not wait for or ask for user input.
+- If the exact approach is blocked, make the safest useful bounded progress and explain the evidence in your final response.
+'''
+adjust_prompt = '''
+Improve the existing attempt according to the review evidence.
+
+Objective:
+$objective
+
+Direction:
+$direction
+
+Relevant memory:
+$memory
+
+Artifacts and evidence:
+$artifacts
+
+Additional context:
+$context
+
+Configured hard change cap: $change_scope.
+
+Rules:
+- Work only in the current worktree and leave the repository in a reviewable state.
+- Keep the action focused and reviewable, including when the configured cap is unlimited.
+- Do not weaken tests, benchmarks, evaluators, fixtures, or campaign state.
+- Inspect and test what you can, but do not wait for or ask for user input.
+- If the exact approach is blocked, make the safest useful bounded progress and explain the evidence in your final response.
+'''
+# Maximum simultaneously active attempts, additionally limited by queue slots.
 parallel = 4
+# Maximum reviewer-requested adjustment rounds per attempt.
 max_adjustments = 3
-max_agent_jobs = 32
-max_merges = 6
-max_wall_time = 28800
-max_files = 5
+# Hard acceptance caps for distinct files and added plus removed lines.
+max_files = 0
 max_lines = 300
+# Repository-relative fnmatch patterns that candidates may not modify.
 protected = [
     ".tq/**",
     "test/**",
@@ -52,9 +156,137 @@ protected = [
     "benchmark/**",
     "benchmarks/**",
 ]
-controller_interval = 5
-controller_timeout = 30
-action_timeout = 1800
+
+# Independently review every completed optimization attempt.
+[explore.inspection]
+command = ["codex", "exec", "--ephemeral", "--sandbox", "workspace-write", "{}"]
+prompt = '''
+Independently inspect the completed optimization action.
+
+Objective:
+$objective
+
+Direction:
+$direction
+
+Relevant memory:
+$memory
+
+Artifacts and evidence:
+$artifacts
+
+Additional context:
+$context
+
+Configured hard change cap: $change_scope.
+
+Rules:
+- Treat worker claims as untrusted; base the decision on the diff, Git state, logs, and trusted evaluator artifacts.
+- Never accept changes that alter protected inputs, fail a required check, miss a required score threshold, or exceed an enabled change cap.
+- Choose exactly one decision: accept, adjust, abandon, evaluate_more, or stop. Use adjust only for a promising bounded follow-up.
+- Do not ask the user questions and do not edit the repository.
+- Any next direction must be distinct from recorded directions.
+- End with one single-line JSON object in this exact shape: TASKQ_JSON: {"decision":"adjust","reason":"...","evidence":["artifact-id"],"memory_updates":[],"next_direction":null}
+  - decision: exactly one decision name below:
+    - accept: the candidate is useful and all hard gates permit integration.
+    - adjust: the candidate is promising and one bounded follow-up mutation could fix it.
+    - abandon: the approach is invalid, unhelpful, unsafe, or not worth another attempt.
+    - evaluate_more: trusted validation evidence is missing and should be collected before deciding.
+    - stop: the campaign should stop exploring and drain accepted work.
+  - reason: a concise justification grounded in inspected evidence.
+  - evidence: identifiers or short references to the artifacts supporting the decision.
+  - memory_updates: durable lessons for later directions, as strings or objects with a claim field.
+  - next_direction: null unless proposing a structurally distinct follow-up direction object.
+'''
+
+# Run trusted acceptance gates in disposable exact-commit worktrees.
+[explore.validation]
+# Every command must exit zero. Strings are split into argv without a shell.
+checks = []
+# Optional score command; its final non-empty stdout line must be finite.
+# score = "python benchmarks/run.py"
+# Required with score: "min" accepts lower values and "max" higher values.
+# score_direction = "min"
+# Required absolute improvement in the score's own units.
+min_improvement = 0.0
+
+# Serialize accepted attempts through rebase, validation, review, and merge.
+[explore.merge]
+review_prompt = '''
+Independently inspect the rebased optimization before integration.
+
+Objective:
+$objective
+
+Direction:
+$direction
+
+Relevant memory:
+$memory
+
+Artifacts and evidence:
+$artifacts
+
+Additional context:
+$context
+
+Configured hard change cap: $change_scope.
+
+Rules:
+- Treat worker claims as untrusted; base the decision on the diff, Git state, logs, and trusted evaluator artifacts.
+- Never accept changes that alter protected inputs, fail a required check, miss a required score threshold, or exceed an enabled change cap.
+- Choose exactly one decision: accept, adjust, abandon, evaluate_more, or stop.
+- Do not ask the user questions and do not edit the repository.
+- End with one single-line JSON object in this exact shape: TASKQ_JSON: {"decision":"accept","reason":"...","evidence":["artifact-id"],"memory_updates":[],"next_direction":null}
+  - decision: exactly one decision name from the list above, choose from:
+    - accept: the rebased candidate remains useful, correct, and permitted by every hard gate.
+    - adjust: the candidate remains promising but needs another bounded mutation before it can be integrated.
+    - abandon: the candidate became invalid, unsafe, unhelpful, or not worth further work.
+    - evaluate_more: trusted validation evidence is missing and should be collected before deciding.
+    - stop: reject this integration and stop the campaign after draining already accepted work.
+  - reason: a concise justification grounded in the rebased diff and trusted evidence.
+  - evidence: identifiers or short references to the artifacts supporting the decision.
+  - memory_updates: durable lessons for later directions, as strings or objects with a claim field.
+  - next_direction: null unless proposing a structurally distinct follow-up direction object.
+'''
+rebase_prompt = '''
+Resolve the in-progress rebase in the current attempt worktree.
+
+Objective:
+$objective
+
+Direction:
+$direction
+
+Relevant memory:
+$memory
+
+Artifacts and evidence:
+$artifacts
+
+Additional context:
+$context
+
+Configured change scope: $change_scope.
+
+Rules:
+- Inspect Git status and resolve only the current conflicts, preserving the target branch behavior and the useful intent of this optimization.
+- Complete the existing rebase; do not abort it or create a merge commit.
+- Keep resolution changes focused on the existing conflict.
+- Do not weaken tests, benchmarks, evaluators, fixtures, or campaign state.
+- Do not ask the user questions; make the safest resolution supported by the repository and artifacts.
+'''
+# Maximum attempts incorporated into the campaign mainline.
+max_accepted_attempts = 0
+
+# Reconcile asynchronous state and supervise the campaign controller.
+[explore.controller]
+# Campaign scheduling deadline in seconds from start.
+max_wall_time = 28800
+# Seconds between durable reconciliation passes.
+interval = 5
+# Heartbeat age in seconds before the tmux broker restarts the controller.
+heartbeat_timeout = 30
 
 # Environment variables added to backend commands and jobs. Keys must be valid
 # shell variable names to be exported into tmux job wrappers. For tmux jobs, the
