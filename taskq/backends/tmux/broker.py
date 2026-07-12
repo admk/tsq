@@ -13,6 +13,11 @@ def now():
     return datetime.datetime.now().isoformat()
 
 
+def slots_required(meta):
+    value = meta.get('slots_required')
+    return 1 if value is None else int(value)
+
+
 def tmux_cmd(args, *tmux_args):
     cmd = [args.command]
     config_file = getattr(args, 'config_file', None)
@@ -44,6 +49,85 @@ def session_exists(args, session):
         stderr=subprocess.DEVNULL,
     )
     return result.returncode == 0
+
+
+def controller_paths(args):
+    root = Path(args.state_dir) / 'controllers'
+    return sorted(root.glob('*.json')) if root.exists() else []
+
+
+def write_controller(meta, path):
+    tmp = path.with_suffix('.json.tmp')
+    tmp.write_text(
+        json.dumps(meta, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+    os.replace(tmp, path)
+
+
+def guard_controllers(args):
+    current_time = time.time()
+    for path in controller_paths(args):
+        try:
+            meta = read_meta(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not meta.get('enabled', True):
+            continue
+        has_restarted = meta.get('last_restart') is not None
+        session = meta.get('session')
+        name = meta.get('name')
+        argv = meta.get('argv') or []
+        heartbeat_file = meta.get('heartbeat_file')
+        if not session or not name or not argv or not heartbeat_file:
+            continue
+        heartbeat = Path(heartbeat_file)
+        try:
+            heartbeat_time = heartbeat.stat().st_mtime
+        except OSError:
+            heartbeat_time = 0
+        try:
+            last_restart = float(
+                meta.get('last_restart') or meta.get('registered_at') or 0)
+            timeout = float(meta.get('timeout', 30))
+        except (TypeError, ValueError):
+            continue
+        stale = current_time - max(heartbeat_time, last_restart) > timeout
+        running = session_exists(args, session)
+        if running and not stale:
+            if heartbeat_time > last_restart and meta.get('restart_count'):
+                meta['restart_count'] = 0
+                try:
+                    write_controller(meta, path)
+                except OSError:
+                    pass
+            continue
+        restart_count = int(meta.get('restart_count') or 0)
+        backoff = min(timeout, 2 ** min(restart_count, 5))
+        if (not running and has_restarted and
+                current_time - last_restart < backoff):
+            continue
+        if running:
+            tmux(args, 'kill-session', '-t', session, check=False)
+        try:
+            tmux(
+                args,
+                'new-session', '-d', '-s', session,
+                '-n', f'controller-{name}',
+                '-c', meta.get('cwd') or os.getcwd(),
+                shlex.join(str(arg) for arg in argv),
+            )
+        except (OSError, subprocess.CalledProcessError) as e:
+            meta['last_error'] = str(e)
+        else:
+            meta.pop('last_error', None)
+        meta['last_restart'] = current_time
+        meta['restart_count'] = restart_count + 1
+        if path.exists():
+            try:
+                write_controller(meta, path)
+            except OSError:
+                pass
 
 
 def pane_pid(args, session):
@@ -374,13 +458,14 @@ def mark_gpu_unavailable(meta, path):
 
 
 def tick(args):
+    guard_controllers(args)
     metas = []
     for path, meta in all_meta(args):
         metas.append((path, refresh_running(args, path, meta)))
     metas_by_id = {int(meta['id']): meta for _, meta in metas}
 
     running_slots = sum(
-        int(meta.get('slots_required') or 1)
+        slots_required(meta)
         for _, meta in metas
         if meta.get('status') == 'running'
     )
@@ -408,7 +493,7 @@ def tick(args):
             meta = mark_dependency_failed(meta, path, reason)
             metas_by_id[int(meta['id'])] = meta
             continue
-        required = int(meta.get('slots_required') or 1)
+        required = slots_required(meta)
         can_start = running_slots + required <= slots
         can_oversubscribe = running_slots == 0 and required > slots
         if not can_start and not can_oversubscribe:

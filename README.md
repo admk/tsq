@@ -108,6 +108,50 @@ Worktrees remain inspectable until the job is removed
 or the backend is reset.
 Merging changes back is manual.
 
+## Autonomous Exploration
+
+`tq explore` runs parallel, agent-driven optimization campaigns on the
+`tmux` backend. Start from a clean, attached local branch:
+
+```sh
+tq explore start "reduce broker latency" \
+  --check 'pytest -q' \
+  --score 'python benchmarks/broker.py' \
+  --score-direction min
+
+tq explore
+tq explore status
+tq explore inspect
+tq explore pause
+tq explore resume
+tq explore stop
+```
+
+Each attempt runs the configured agent in its own branch-backed worktree.
+Actual concurrency is capped by both `explore.parallel` and the selected
+queue's available slots.
+When an attempt finishes, a fresh reviewer autonomously inspects its status,
+diff, and trusted checks or scores, then accepts it, requests an adjustment,
+abandons it, or asks for more evidence. Checks and scoring are optional, but
+when supplied they are hard acceptance gates and cannot be waived by agents.
+
+Accepted attempts enter a FIFO merge queue. They are rebased, rechecked, and
+merged one at a time into a campaign mainline; conflicts are returned to an
+agent in the attempt worktree. While this queue is non-empty, existing work
+may finish and be reviewed, but no new direction starts. Once it drains,
+planning resumes from the updated mainline. The final mainline is
+automatically rebased and fast-forwarded onto the original branch when that
+checkout is clean.
+
+Campaign state and evidence are durable. Confirmed results become persistent
+project memory so later directions can avoid failed approaches and build on
+successful ones. `pause`, controller restarts, and process failures preserve
+this state.
+
+Configured agent and validation commands still run with the invoking user's
+OS privileges. Taskq isolates their Git checkouts and validates the resulting
+commits, but arbitrary runners should provide their own filesystem sandbox.
+
 ## Configuration
 
 `tq` reads TOML configuration in this order:
@@ -131,6 +175,20 @@ socket = "taskq"
 [alloc]
 gpus = 0
 slots = 1
+
+[explore]
+command = ["codex", "exec", "{}"]
+parallel = 4
+max_adjustments = 3
+max_agent_jobs = 32
+max_merges = 6
+max_wall_time = 28800
+max_files = 5
+max_lines = 300
+protected = [".tq/**", "test/**", "tests/**", "benchmark/**", "benchmarks/**"]
+controller_interval = 5
+controller_timeout = 30
+action_timeout = 1800
 
 [env]
 OMP_NUM_THREADS = "1"
@@ -162,6 +220,7 @@ Useful config keys:
 | `socket` | Shared backend socket name. For tmux this selects the socket file under the taskq cache directory. |
 | `[alloc].gpus` | Default GPUs required per new job. |
 | `[alloc].slots` | Default slots required per new job. |
+| `[explore]` | Agent command, concurrency, safety limits, protected paths, and controller timing for autonomous campaigns. |
 | `[env]` | Environment variables exported into jobs. |
 | `[backends.tmux].gpu_free_perc` | GPU memory-free threshold used by the tmux broker when allocating GPUs. |
 | `[queues.<name>]` | Per-queue overrides. Use `tq -Q <name> ...` to select a queue. |
@@ -331,6 +390,18 @@ are `id`, `status`, `slots`, `gpus`, `gpu_ids`, `enqueue`,
 | `tq config KEY` | Print one config key. |
 | `tq config KEY VALUE` | Set a config key in the active rc file. |
 | `tq config KEY null` | Delete a config key from the active rc file. |
+
+### Explore
+
+| Command | Purpose |
+| --- | --- |
+| `tq explore start OBJECTIVE` | Start a tmux-only campaign from the clean current branch. |
+| `tq explore` | List active and recent campaigns. |
+| `tq explore status [CAMPAIGN]` | Show campaign progress, attempts, and merge queue. |
+| `tq explore inspect [CAMPAIGN] [ATTEMPT]` | Show an attempt's decisions, evidence, and diff. |
+| `tq explore pause [CAMPAIGN]` | Stop scheduling new campaign work. |
+| `tq explore resume [CAMPAIGN]` | Resume durable campaign reconciliation and scheduling. |
+| `tq explore stop [CAMPAIGN]` | Drain accepted work and land the campaign mainline. |
 
 ## Statuses
 

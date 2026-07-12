@@ -48,19 +48,10 @@ def worktree_cwd(source_cwd, git_root, git_worktree):
     return worktree / relative
 
 
-def create_worktree(git_root, git_commit, git_worktree):
+def _run_worktree_add(git_root, args, git_worktree):
     try:
         subprocess.run(
-            [
-                'git',
-                '-C',
-                git_root,
-                'worktree',
-                'add',
-                '--detach',
-                str(git_worktree),
-                git_commit,
-            ],
+            ['git', '-C', git_root, 'worktree', 'add', *args],
             capture_output=True,
             check=True,
             text=True,
@@ -74,7 +65,35 @@ def create_worktree(git_root, git_commit, git_worktree):
         ) from e
 
 
-def remove_worktree(meta):
+def create_worktree(git_root, git_commit, git_worktree):
+    _run_worktree_add(
+        git_root, ['--detach', str(git_worktree), git_commit], git_worktree)
+
+
+def create_branch_worktree(
+    git_root, branch, git_worktree, start_point='HEAD',
+):
+    """Create a campaign-owned worktree on a new local branch."""
+    git_root = str(Path(git_root).resolve())
+    git_worktree = str(Path(git_worktree).resolve())
+    _run_worktree_add(
+        git_root,
+        ['-b', branch, git_worktree, start_point],
+        git_worktree,
+    )
+    return {
+        'git_root': git_root,
+        'git_worktree': git_worktree,
+        'git_branch': branch,
+        'git_commit': git_output(
+            ['-C', git_worktree, 'rev-parse', 'HEAD']),
+        'workspace_owner': 'campaign',
+    }
+
+
+def remove_worktree(meta, force=False):
+    if meta.get('workspace_owner') == 'campaign' and not force:
+        return
     git_worktree = meta.get('git_worktree')
     if not git_worktree:
         return
@@ -107,6 +126,63 @@ def remove_worktree(meta):
         shutil.rmtree(git_worktree, ignore_errors=True)
 
 
+def remove_branch_worktree(
+    meta, delete_branch=False, force_branch=False,
+):
+    """Remove a named worktree and optionally its local branch."""
+    remove_worktree(meta, force=True)
+    branch = meta.get('git_branch')
+    git_root = meta.get('git_root')
+    if not delete_branch or not branch or not git_root:
+        return
+    flag = '-D' if force_branch else '-d'
+    try:
+        git_output(['-C', git_root, 'branch', flag, branch])
+    except BackendError as e:
+        raise BackendError(
+            f'failed to delete git branch {branch!r}: {e}') from e
+
+
+def remove_nested_worktrees(root):
+    """Unregister linked worktrees nested below a disposable state root."""
+    linked = []
+    for current, dirs, files in os.walk(root):
+        if '.git' not in files:
+            continue
+        linked.append(Path(current).resolve())
+        dirs[:] = []
+    for worktree in linked:
+        try:
+            try:
+                branch = git_output([
+                    '-C', str(worktree), 'symbolic-ref', '--short', 'HEAD'])
+            except BackendError:
+                branch = None
+            common = Path(git_output([
+                '-C', str(worktree), 'rev-parse', '--git-common-dir',
+            ]))
+            if not common.is_absolute():
+                common = (worktree / common).resolve()
+            subprocess.run(
+                [
+                    'git', '--git-dir', str(common), 'worktree', 'remove',
+                    '--force', str(worktree),
+                ],
+                capture_output=True,
+                check=True,
+                text=True,
+            )
+            if branch and branch.startswith('tq/explore/'):
+                subprocess.run(
+                    ['git', '--git-dir', str(common), 'branch', '-D', branch],
+                    capture_output=True, check=False, text=True)
+        except (BackendError, FileNotFoundError, subprocess.CalledProcessError) as e:
+            print(
+                f'Warning: failed to unregister git worktree {worktree}: {e}',
+                file=sys.stderr,
+            )
+
+
 def prepare_checkout(
     job_dir, git_ref=None, git_commit=None, git_root=None, source_cwd=None,
 ):
@@ -135,4 +211,5 @@ def prepare_checkout(
         'git_root': git_root,
         'git_worktree': str(git_worktree),
         'source_cwd': source_cwd,
+        'workspace_owner': 'job',
     }, str(checkout_cwd)

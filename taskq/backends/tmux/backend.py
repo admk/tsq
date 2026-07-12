@@ -32,7 +32,7 @@ def render_wrapper(job_id, argv, session, output_file, start_file, env_exports):
 
 @register_backend('tmux')
 class TmuxBackend(BackendBase):
-    BROKER_VERSION = '7'
+    BROKER_VERSION = '8'
     supports_git_ref = True
 
     def __init__(self, name, config):
@@ -53,6 +53,7 @@ class TmuxBackend(BackendBase):
             / queue
         )
         self.jobs_dir = self.state_dir / 'jobs'
+        self.controllers_dir = self.state_dir / 'controllers'
         self.counter_file = self.state_dir / 'next_id'
         self.broker_config_file = self.state_dir / 'broker.json'
         self.tmux_default_config_file = Path(__file__).with_name('default.conf')
@@ -171,6 +172,12 @@ class TmuxBackend(BackendBase):
     def _job_dir(self, job_id):
         return self.jobs_dir / str(job_id)
 
+    def _controller_file(self, name):
+        return self.controllers_dir / f'{self._sanitize_name(name)}.json'
+
+    def _controller_session(self, name):
+        return f'{self.prefix}-controller-{self._sanitize_name(name)}'
+
     def _meta_file(self, job_id):
         return self._job_dir(job_id) / 'meta.json'
 
@@ -239,6 +246,72 @@ class TmuxBackend(BackendBase):
                 continue
         metas.sort(key=lambda meta: int(meta['id']))
         return metas
+
+    def _all_controllers(self):
+        controllers = []
+        if not self.controllers_dir.exists():
+            return controllers
+        for path in self.controllers_dir.glob('*.json'):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    controllers.append(json.load(f))
+            except (json.JSONDecodeError, OSError):
+                continue
+        return sorted(controllers, key=lambda item: item['name'])
+
+    def register_controller(
+        self, name, argv, cwd, heartbeat_file, timeout=30,
+    ):
+        if isinstance(argv, (str, bytes)):
+            raise BackendError('controller argv must be a sequence of arguments')
+        argv = [str(arg) for arg in argv]
+        cwd = Path(cwd).expanduser().resolve()
+        if not argv:
+            raise BackendError('controller command cannot be empty')
+        if not cwd.is_dir():
+            raise BackendError(f'controller cwd does not exist: {cwd}')
+        timeout = float(timeout)
+        if timeout <= 0:
+            raise BackendError('controller timeout must be positive')
+        meta = {
+            'name': str(name),
+            'session': self._controller_session(name),
+            'argv': argv,
+            'cwd': str(cwd),
+            'heartbeat_file': str(Path(heartbeat_file).expanduser().resolve()),
+            'timeout': timeout,
+            'registered_at': time.time(),
+            'enabled': True,
+        }
+        self.controllers_dir.mkdir(parents=True, exist_ok=True)
+        path = self._controller_file(name)
+        tmp = path.with_suffix('.json.tmp')
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(meta, f, indent=2, sort_keys=True)
+            f.write('\n')
+        os.replace(tmp, path)
+        self._ensure_broker()
+        return meta
+
+    def unregister_controller(self, name):
+        path = self._controller_file(name)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            meta = {'session': self._controller_session(name)}
+        if path.exists():
+            meta['enabled'] = False
+            self.controllers_dir.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix('.json.tmp')
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(meta, f, indent=2, sort_keys=True)
+                f.write('\n')
+            os.replace(tmp, path)
+        session = meta.get('session')
+        if session and self._session_exists(session):
+            self._tmux('kill-session', '-t', session, check=False)
+        path.unlink(missing_ok=True)
 
     def _session_name(self, job_id):
         return f'{self.prefix}-{job_id}'
@@ -475,7 +548,10 @@ class TmuxBackend(BackendBase):
             'status': meta.get('status', 'failed'),
             'exitcode': meta.get('exitcode'),
             'command': meta.get('command', ''),
-            'slots_required': int(meta.get('slots_required') or 1),
+            'slots_required': int(
+                meta['slots_required']
+                if meta.get('slots_required') is not None else 1
+            ),
             'gpus_required': int(meta.get('gpus_required') or 0),
             'gpu_ids': meta.get('gpu_ids', ''),
             'depends_on': meta.get('depends_on', []),
@@ -493,6 +569,9 @@ class TmuxBackend(BackendBase):
             'git_commit': meta.get('git_commit'),
             'git_root': meta.get('git_root'),
             'git_worktree': meta.get('git_worktree'),
+            'workspace_owner': meta.get('workspace_owner'),
+            'metadata': meta.get('metadata'),
+            'internal': meta.get('internal'),
         }
         return {k: v for k, v in info.items() if v is not None}
 
@@ -549,6 +628,13 @@ class TmuxBackend(BackendBase):
             'prefix': self.prefix,
             'broker_session': self.broker_session,
             'broker_running': self._session_exists(self.broker_session),
+            'controllers': [
+                dict(
+                    item,
+                    running=self._session_exists(item.get('session')),
+                )
+                for item in self._all_controllers()
+            ],
         }
         version = self._tmux('-V', check=False) or ''
         result = re.search(r'tmux\s+(.+)$', version)
@@ -565,6 +651,7 @@ class TmuxBackend(BackendBase):
     def backend_reset(self, args):
         for meta in self._all_meta():
             git_ref_utils.remove_worktree(meta)
+        git_ref_utils.remove_nested_worktrees(self.state_dir / 'explore')
         shutil.rmtree(self.state_dir, ignore_errors=True)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         lock_file = self.state_dir / 'next_id.lock'
@@ -610,10 +697,31 @@ class TmuxBackend(BackendBase):
     def add(
         self, command, gpus=None, slots=None, depends_on=None, env=None,
         git_ref=None, git_commit=None, git_root=None, source_cwd=None,
+        cwd=None, metadata=None, internal=False, workspace_owner=None,
     ):
         alloc_config = self.config.get('alloc', {})
         gpus = gpus if gpus is not None else alloc_config.get('gpus', 0)
         slots = slots if slots is not None else alloc_config.get('slots', 1)
+        gpus = int(gpus)
+        slots = int(slots)
+        if slots < 0:
+            raise BackendError('slots cannot be negative')
+        if slots == 0 and not internal:
+            raise BackendError('zero-slot jobs are internal only')
+        if slots == 0 and gpus:
+            raise BackendError('zero-slot jobs cannot request GPUs')
+        try:
+            json.dumps(metadata)
+        except (TypeError, ValueError) as e:
+            raise BackendError('job metadata must be JSON serializable') from e
+        checkout_args = (git_ref, git_commit, git_root, source_cwd)
+        if cwd is not None and any(value is not None for value in checkout_args):
+            raise BackendError('cwd cannot be combined with git checkout options')
+        if cwd is not None:
+            cwd = Path(cwd).expanduser().resolve()
+            if not cwd.is_dir():
+                raise BackendError(f'job cwd does not exist: {cwd}')
+            cwd = str(cwd)
         depends_on = [int(job_id) for job_id in depends_on or []]
         job_id = self._next_id()
         session = self._session_name(job_id)
@@ -623,17 +731,20 @@ class TmuxBackend(BackendBase):
         wrapper = job_dir / 'run.sh'
         start_file = job_dir / 'start'
         git_meta = {}
-        try:
-            git_meta, cwd = self._prepare_git_checkout(
-                job_dir,
-                git_ref=git_ref,
-                git_commit=git_commit,
-                git_root=git_root,
-                source_cwd=source_cwd,
-            )
-        except BackendError:
-            shutil.rmtree(job_dir, ignore_errors=True)
-            raise
+        if cwd is None:
+            try:
+                git_meta, cwd = self._prepare_git_checkout(
+                    job_dir,
+                    git_ref=git_ref,
+                    git_commit=git_commit,
+                    git_root=git_root,
+                    source_cwd=source_cwd,
+                )
+            except BackendError:
+                shutil.rmtree(job_dir, ignore_errors=True)
+                raise
+        if workspace_owner is None:
+            workspace_owner = git_meta.get('workspace_owner')
         argv = shlex.split(command)
         job_env = (
             self._capture_job_env(os.environ, self.env)
@@ -659,6 +770,9 @@ class TmuxBackend(BackendBase):
             'session': session,
             'pid': None,
             'cwd': cwd,
+            'workspace_owner': workspace_owner,
+            'metadata': metadata,
+            'internal': bool(internal),
         }
         meta.update({k: v for k, v in git_meta.items() if v is not None})
         self._write_env(job_id, job_env)

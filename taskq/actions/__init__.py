@@ -1,4 +1,4 @@
-from . import read, write, add, backend, config
+from . import read, write, add, backend, config, explore
 from .base import INFO
 
 

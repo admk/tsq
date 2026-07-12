@@ -6,6 +6,8 @@ import pytest
 from taskq import TOOL_NAME
 from taskq.actions.write import RerunAction
 from taskq.backends import BACKENDS
+from taskq.backends import git_ref as git_ref_utils
+from taskq.backends.base import BackendError
 from taskq.backends.tmux.backend import TmuxBackend
 from taskq.common import FilterArgs
 
@@ -78,6 +80,7 @@ def init_git_repo(path):
     git(path, 'init')
     git(path, 'config', 'user.email', 'taskq@example.test')
     git(path, 'config', 'user.name', 'Taskq Tests')
+    git(path, 'config', 'commit.gpgsign', 'false')
     (path / 'script.sh').write_text('echo one\n', encoding='utf-8')
     git(path, 'add', '.')
     git(path, 'commit', '-m', 'one')
@@ -295,6 +298,58 @@ def test_tmux_add_captures_enqueue_environment(monkeypatch, tmux_backend):
     assert env['FOO'] == 'from-shell'
 
 
+def test_tmux_add_supports_explicit_cwd_metadata_and_zero_slots(
+    tmp_path, tmux_backend
+):
+    job_id = int(tmux_backend.add(
+        'pwd',
+        gpus=0,
+        slots=0,
+        cwd=tmp_path,
+        metadata={'campaign': 'speed'},
+        internal=True,
+        workspace_owner='campaign',
+    ))
+
+    meta = read_meta(tmux_backend, job_id)
+    assert meta['cwd'] == str(tmp_path.resolve())
+    assert meta['slots_required'] == 0
+    assert meta['metadata'] == {'campaign': 'speed'}
+    assert meta['workspace_owner'] == 'campaign'
+    full = tmux_backend.full_info([job_id])[0]
+    assert full['slots_required'] == 0
+    assert full['metadata'] == {'campaign': 'speed'}
+    assert full['workspace_owner'] == 'campaign'
+
+
+def test_tmux_add_restricts_zero_slots_and_checkout_with_cwd(
+    tmp_path, tmux_backend
+):
+    with pytest.raises(BackendError, match='internal only'):
+        tmux_backend.add('true', gpus=0, slots=0)
+    with pytest.raises(BackendError, match='cannot be combined'):
+        tmux_backend.add('true', gpus=0, slots=1, cwd=tmp_path, git_ref='HEAD')
+
+
+def test_tmux_registers_and_unregisters_controller(tmp_path, tmux_backend):
+    heartbeat = tmp_path / 'heartbeat'
+    registered = tmux_backend.register_controller(
+        'campaign-1', ['python', '-m', 'controller'], tmp_path, heartbeat,
+    )
+
+    path = tmux_backend._controller_file('campaign-1')
+    stored = json.loads(path.read_text(encoding='utf-8'))
+    assert stored['argv'] == ['python', '-m', 'controller']
+    assert stored['cwd'] == str(tmp_path)
+    assert stored['heartbeat_file'] == str(heartbeat)
+    assert tmux_backend.backend_info()['controllers'][0]['name'] == 'campaign-1'
+
+    tmux_backend.sessions.add(registered['session'])
+    tmux_backend.unregister_controller('campaign-1')
+    assert not path.exists()
+    assert registered['session'] not in tmux_backend.sessions
+
+
 def test_tmux_rerun_reuses_original_enqueue_environment(
     monkeypatch, tmux_backend
 ):
@@ -419,6 +474,60 @@ def test_tmux_remove_and_reset_cleanup_git_worktrees(
     tmux_backend.backend_reset(None)
     assert not (tmp_path / second_worktree).exists()
     assert second_worktree not in git(repo, 'worktree', 'list', '--porcelain')
+
+
+def test_campaign_owned_branch_worktree_outlives_job_removal(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    init_git_repo(repo)
+    worktree = tmp_path / 'attempt'
+    workspace = git_ref_utils.create_branch_worktree(
+        repo, 'tq/explore/test/attempt', worktree,
+    )
+    monkeypatch.chdir(repo)
+    job_id = int(tmux_backend.add(
+        'true', gpus=0, slots=1, cwd=worktree,
+        workspace_owner='campaign',
+    ))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update(workspace)
+    tmux_backend._write_meta(meta)
+
+    tmux_backend.remove({'id': job_id})
+
+    assert worktree.is_dir()
+    assert workspace['git_branch'] in git(repo, 'branch', '--list')
+    git_ref_utils.remove_branch_worktree(
+        workspace, delete_branch=True, force_branch=True,
+    )
+    assert not worktree.exists()
+    assert not git(repo, 'branch', '--list', workspace['git_branch'])
+
+
+def test_backend_reset_unregisters_nested_campaign_worktrees(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    init_git_repo(repo)
+    monkeypatch.chdir(repo)
+    explore_root = tmux_backend.state_dir / 'explore' / 'campaign'
+    mainline = explore_root / 'mainline'
+    validation = explore_root / 'validation' / 'candidate'
+    git_ref_utils.create_branch_worktree(
+        repo, 'tq/explore/reset/mainline', mainline,
+    )
+    git_ref_utils.create_worktree(
+        str(repo), git(repo, 'rev-parse', 'HEAD'), validation,
+    )
+
+    tmux_backend.backend_reset(None)
+
+    registered = git(repo, 'worktree', 'list', '--porcelain')
+    assert str(mainline) not in registered
+    assert str(validation) not in registered
+    assert not explore_root.exists()
+    assert not git(repo, 'branch', '--list', 'tq/explore/reset/mainline')
 
 
 def test_tmux_add_gpu_job_fails_immediately_without_nvidia(tmux_backend, capsys):

@@ -33,6 +33,29 @@ gpus = 0
 # Queue slots required per job.
 slots = 1
 
+# Autonomous optimization campaigns. `tq explore` is supported only by the
+# tmux backend. The command is argv, and the standalone `{}` element is
+# replaced with each role-specific agent prompt.
+[explore]
+command = ["codex", "exec", "{}"]
+parallel = 4
+max_adjustments = 3
+max_agent_jobs = 32
+max_merges = 6
+max_wall_time = 28800
+max_files = 5
+max_lines = 300
+protected = [
+    ".tq/**",
+    "test/**",
+    "tests/**",
+    "benchmark/**",
+    "benchmarks/**",
+]
+controller_interval = 5
+controller_timeout = 30
+action_timeout = 1800
+
 # Environment variables added to backend commands and jobs. Keys must be valid
 # shell variable names to be exported into tmux job wrappers. For tmux jobs, the
 # enqueue-time shell environment is also captured and wins over duplicate keys.

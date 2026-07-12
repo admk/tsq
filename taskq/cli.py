@@ -55,10 +55,14 @@ class CLI:
     def _load_config(self, args):
         config = {}
         try:
-            config = tomlkit.loads(
-                resources.files('taskq').joinpath(
+            if hasattr(resources, 'files'):
+                text = resources.files('taskq').joinpath(
                     self.default_config).read_text(encoding='utf-8')
-            )
+            else:  # Python 3.8 compatibility.
+                with resources.open_text(
+                    'taskq', self.default_config, encoding='utf-8') as stream:
+                    text = stream.read()
+            config = tomlkit.loads(text)
         except (FileNotFoundError, tomlkit.exceptions.ParseError) as e:
             print(f'Error parsing default config: {e}')
         if args.rc_file:

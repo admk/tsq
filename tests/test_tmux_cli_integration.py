@@ -129,6 +129,7 @@ def init_git_repo(path):
     git(path, 'init')
     git(path, 'config', 'user.email', 'taskq@example.test')
     git(path, 'config', 'user.name', 'Taskq Tests')
+    git(path, 'config', 'commit.gpgsign', 'false')
     (path / 'script.sh').write_text('echo hi\n', encoding='utf-8')
     git(path, 'add', '.')
     git(path, 'commit', '-m', 'initial')

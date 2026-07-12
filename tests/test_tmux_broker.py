@@ -1,5 +1,7 @@
 import json
+import os
 import subprocess
+import time
 from argparse import Namespace
 from pathlib import Path
 
@@ -98,6 +100,65 @@ def test_broker_oversubscribes_single_large_job(broker_args, fake_tmux, monkeypa
     monkeypatch.setattr(broker, 'query_free_gpus', lambda args: [])
     broker.tick(broker_args)
     assert read_meta(path)['status'] == 'running'
+
+
+def test_broker_zero_slot_jobs_run_without_consuming_capacity(
+    broker_args, fake_tmux, monkeypatch
+):
+    full = write_meta(broker_args.state_dir, 1, slots_required=2)
+    control = write_meta(broker_args.state_dir, 2, slots_required=0)
+    waiting = write_meta(broker_args.state_dir, 3, slots_required=1)
+    monkeypatch.setattr(broker, 'query_free_gpus', lambda args: [])
+
+    broker.tick(broker_args)
+
+    assert read_meta(full)['status'] == 'running'
+    assert read_meta(control)['status'] == 'running'
+    assert read_meta(waiting)['status'] == 'queued'
+
+
+def test_broker_starts_and_restarts_registered_controllers(
+    broker_args, fake_tmux, monkeypatch, tmp_path
+):
+    calls, sessions = fake_tmux
+    controller_dir = Path(broker_args.state_dir) / 'controllers'
+    controller_dir.mkdir()
+    heartbeat = tmp_path / 'heartbeat'
+    heartbeat.write_text('ok', encoding='utf-8')
+    path = controller_dir / 'campaign.json'
+    path.write_text(json.dumps({
+        'name': 'campaign',
+        'session': 'controller-campaign',
+        'argv': ['python', '-m', 'controller', 'two words'],
+        'cwd': str(tmp_path),
+        'heartbeat_file': str(heartbeat),
+        'timeout': 30,
+        'registered_at': time.time(),
+        'enabled': True,
+    }), encoding='utf-8')
+
+    broker.guard_controllers(broker_args)
+
+    starts = [call for call in calls if call[:2] == ('new-session', '-d')]
+    assert starts[0][-1] == "python -m controller 'two words'"
+    assert 'controller-campaign' in sessions
+
+    calls.clear()
+    sessions.clear()
+    broker.guard_controllers(broker_args)
+    assert not any(call[:2] == ('new-session', '-d') for call in calls)
+
+    calls.clear()
+    sessions.add('controller-campaign')
+    old = time.time() - 60
+    os.utime(heartbeat, (old, old))
+    meta = read_meta(path)
+    meta['last_restart'] = old
+    path.write_text(json.dumps(meta), encoding='utf-8')
+    broker.guard_controllers(broker_args)
+
+    assert ('kill-session', '-t', 'controller-campaign') in calls
+    assert any(call[:2] == ('new-session', '-d') for call in calls)
 
 
 def test_broker_uses_runtime_slots_config(broker_args, fake_tmux, monkeypatch):

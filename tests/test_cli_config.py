@@ -15,6 +15,27 @@ def test_default_config_exposes_tmux_and_ts():
     assert 'state_dir' not in config['backends']['tmux']
 
 
+def test_default_config_exposes_explore_limits():
+    config = tomlkit.loads(
+        Path('taskq/default.toml').read_text(encoding='utf-8'))
+    explore = config['explore']
+
+    assert explore['command'] == ['codex', 'exec', '{}']
+    assert explore['parallel'] == 4
+    assert explore['max_adjustments'] == 3
+    assert explore['max_agent_jobs'] == 32
+    assert explore['max_merges'] == 6
+    assert explore['max_wall_time'] == 8 * 60 * 60
+    assert explore['max_files'] == 5
+    assert explore['max_lines'] == 300
+    assert explore['protected'] == [
+        '.tq/**', 'test/**', 'tests/**', 'benchmark/**', 'benchmarks/**',
+    ]
+    assert explore['controller_interval'] == 5
+    assert explore['controller_timeout'] == 30
+    assert explore['action_timeout'] == 30 * 60
+
+
 def test_load_config_uses_packaged_defaults_without_local_rc(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'xdg'))
