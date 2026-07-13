@@ -459,6 +459,36 @@ def test_clean_rebase_review_fast_forward_and_cleanup(campaign):
     ) == ''
 
 
+def test_rebased_candidate_skips_validation_and_goes_to_merge_review(campaign):
+    config = dict(campaign.controller.config)
+    config['phases'] = dict(config['phases'])
+    config['phases']['validation'] = dict(
+        config['phases']['validation'], checks=['pytest -q'])
+    campaign.state.update_campaign('c1', config=config)
+    attempt = campaign.commit_change(
+        campaign.attempt('merge-no-validation'), 'faster\n')
+    validation = {'checks_passed': True, 'score': 7.0}
+    campaign.state.enqueue_merge_request(
+        'c1', attempt['id'], attempt['head'], metadata={
+            'inspection_artifacts': {'validation': validation},
+        })
+
+    campaign.controller.reconcile()
+
+    assert campaign.state.list_jobs(campaign_id='c1', role='validation') == []
+    review = campaign.state.list_jobs(campaign_id='c1', role='reviewer')[0]
+    assert review['metadata']['phase'] == 'merge'
+    assert review['metadata']['artifacts']['accepted_inspection'] == {
+        'validation': validation}
+    campaign.backend.finish(
+        review['backend_job_id'],
+        'TASKQ_JSON: {"decision":"accept","reason":"still compatible"}',
+    )
+    campaign.controller.reconcile()
+    assert campaign.state.get_campaign('c1')['config'][
+        'baseline_validation'] == validation
+
+
 def test_reconcile_recovers_git_fast_forward_before_state_finalize(campaign):
     attempt = campaign.commit_change(campaign.attempt('recover'), 'faster\n')
     request = campaign.state.enqueue_merge_request(
@@ -549,7 +579,7 @@ def test_campaign_runs_from_planning_through_landing(campaign):
     ]
 
 
-def test_conflict_agent_cannot_pass_review_by_aborting_rebase(campaign):
+def test_conflict_resolver_abandons_branch_and_records_reason(campaign):
     attempt = campaign.commit_change(campaign.attempt('conflict'), 'candidate\n')
     (campaign.mainline / 'app.txt').write_text('mainline\n', encoding='utf-8')
     mainline_head, _ = snapshot(campaign.mainline, 'mainline moved')
@@ -560,11 +590,16 @@ def test_conflict_agent_cannot_pass_review_by_aborting_rebase(campaign):
 
     rebase_job = campaign.state.list_jobs(campaign_id='c1', role='rebase')[0]
     _run(attempt['worktree'], 'rebase', '--abort')
-    campaign.backend.finish(rebase_job['backend_job_id'], 'resolved conflicts')
+    reason = 'optimization requires changing the parent API behavior'
+    campaign.backend.finish(rebase_job['backend_job_id'], reason)
     campaign.controller.reconcile()
 
     assert campaign.state.get_merge_request(request['id'])['status'] == 'rejected'
+    assert campaign.state.get_attempt(attempt['id'])['status'] == 'abandoned'
+    assert any(reason in finding['claim'] for finding in
+               campaign.state.list_findings('c1'))
     assert campaign.state.list_jobs(campaign_id='c1', role='reviewer') == []
+    assert not Path(attempt['worktree']).exists()
 
 
 def test_adjustment_is_deferred_while_merge_queue_is_nonempty(campaign):

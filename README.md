@@ -135,7 +135,7 @@ Configuration is divided by execution phase:
 | `optimization` | Create and adjust candidate changes in worktrees. |
 | `inspection` | Independently review completed attempts. |
 | `validation` | Run trusted checks and comparative scoring. |
-| `merge` | Rebase, revalidate, review, and serialize accepted attempts. |
+| `merge` | Rebase, review, and serialize accepted attempts. |
 | `controller` | Schedule work, enforce the campaign deadline, and supervise heartbeats. |
 
 Agent instructions are TOML templates rather than Python constants. Configure
@@ -147,16 +147,20 @@ write `$$` for a literal dollar sign. The shared
 `explore.response_repair_prompt` controls structured-response repair turns.
 
 Each attempt runs the configured agent in its own branch-backed worktree.
-Actual concurrency is capped by both `explore.parallel` and the selected
-queue's available slots.
+Actual concurrency is capped by both `explore.optimization.parallel` and the selected
+queue's available slots. Planner batches prioritize independent directions
+that can execute concurrently with minimal overlap or ordering dependencies.
 When an attempt finishes, a fresh reviewer autonomously inspects its status,
 diff, and trusted checks or scores, then accepts it, requests an adjustment,
 abandons it, or asks for more evidence. Checks and scoring are optional, but
 when supplied they are hard acceptance gates and cannot be waived by agents.
 
-Accepted attempts enter a FIFO merge queue. They are rebased, rechecked, and
+Accepted attempts enter a FIFO merge queue. They are rebased, reviewed, and
 merged one at a time into a campaign mainline; conflicts are returned to an
-agent in the attempt worktree. While this queue is non-empty, existing work
+agent in the attempt worktree. Conflict resolution preserves current mainline
+behavior first and the accepted optimization second. If they are incompatible,
+the attempt branch is abandoned and the reason is recorded in campaign memory.
+While this queue is non-empty, existing work
 may finish and be reviewed, but no new direction starts. Once it drains,
 planning resumes from the updated mainline. The final mainline is
 fast-forwarded automatically when safe. If the target has diverged, taskq

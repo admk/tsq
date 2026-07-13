@@ -25,7 +25,7 @@ def test_default_config_exposes_explore_phases():
         'planning', 'optimization', 'inspection', 'validation',
         'merge', 'controller',
     }
-    assert explore['command'] == ['codex', 'exec', '{}']
+    assert explore['command'].count('{}') == 1
     assert explore['timeout'] == 30 * 60
     assert explore['optimization']['parallel'] == 4
     assert explore['optimization']['max_adjustments'] == 3

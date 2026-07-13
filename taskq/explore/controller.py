@@ -529,9 +529,9 @@ class ExploreController:
         if phase == 'merge':
             self._apply_merge_decision(attempt, decision, merge_request_id, metadata)
         else:
-            self._apply_inspection_decision(attempt, decision)
+            self._apply_inspection_decision(attempt, decision, metadata)
 
-    def _apply_inspection_decision(self, attempt, decision):
+    def _apply_inspection_decision(self, attempt, decision, metadata):
         attempt = self.state.get_attempt(attempt['id'])
         if attempt['status'] not in {'active', 'reviewing'}:
             return
@@ -546,7 +546,10 @@ class ExploreController:
                 return
             self.state.update_attempt(attempt['id'], status='merge_queued')
             self.state.enqueue_merge_request(
-                self.campaign_id, attempt['id'], attempt['head'])
+                self.campaign_id, attempt['id'], attempt['head'], metadata={
+                    'inspection_artifacts': metadata.get('artifacts', {}),
+                    'inspection_reason': decision['reason'],
+                })
         elif value == 'adjust':
             if self.campaign['status'] != 'active':
                 self._abandon(attempt, 'campaign is draining')
@@ -650,7 +653,8 @@ class ExploreController:
                 max_lines=self._phase('optimization')['max_lines'],
             )
             self.state.update_merge_request(
-                request['id'], metadata={'stage': 'resolving'})
+                request['id'], metadata=dict(
+                    request['metadata'], stage='resolving'))
             self._queue_agent(
                 'rebase', prompt, attempt['worktree'], attempt['id'],
                 attempt['direction_id'], metadata={'merge_request_id': request['id']})
@@ -658,7 +662,8 @@ class ExploreController:
         head = git(attempt['worktree'], 'rev-parse', 'HEAD')
         attempt = self.state.update_attempt(attempt['id'], head=head)
         self.state.update_merge_request(
-            request['id'], head=head, metadata={'stage': 'reviewing'})
+            request['id'], head=head, metadata=dict(
+                request['metadata'], stage='reviewing'))
         self._review_rebased(attempt, request['id'])
 
     def _finish_rebase(self, job, output):
@@ -668,9 +673,13 @@ class ExploreController:
             attempt['worktree']) and self._is_ancestor(
                 attempt['worktree'], self.campaign['mainline_head'], 'HEAD')
         if not valid:
+            detail = (output or '').strip()[-4000:]
+            reason = 'conflict resolver could not produce a valid rebase'
+            if detail:
+                reason += ': {}'.format(detail)
             self.state.complete_merge_request(
-                request_id, 'rejected', {'reason': 'rebase conflict unresolved'})
-            self._abandon(attempt, 'rebase conflict unresolved')
+                request_id, 'rejected', {'reason': reason})
+            self._abandon(attempt, reason)
             return
         head = git(attempt['worktree'], 'rev-parse', 'HEAD')
         attempt = self.state.update_attempt(attempt['id'], head=head)
@@ -678,19 +687,19 @@ class ExploreController:
         self._review_rebased(attempt, request_id)
 
     def _review_rebased(self, attempt, request_id):
+        request = self.state.get_merge_request(request_id)
         artifacts = {
             'diff': diff(
                 attempt['worktree'], self.campaign['mainline_head'], attempt['head']),
             'changed_paths': changed_paths(
                 attempt['worktree'], self.campaign['mainline_head']),
+            'accepted_inspection': request['metadata'].get(
+                'inspection_artifacts', {}),
         }
         artifacts['protected_paths'] = protected_paths(
             artifacts['changed_paths'],
             self._phase('optimization')['protected_paths'])
-        if self._has_validation():
-            self._queue_validation(attempt, 'merge', artifacts, request_id)
-        else:
-            self._queue_reviewer(attempt, 'merge', artifacts, request_id)
+        self._queue_reviewer(attempt, 'merge', artifacts, request_id)
 
     def _apply_merge_decision(self, attempt, decision, request_id, metadata):
         request = self.state.get_merge_request(request_id)
@@ -719,17 +728,18 @@ class ExploreController:
                 request_id, 'failed', {'reason': 'candidate changed after review'})
             self._abandon(attempt, 'candidate changed after review')
             return
-        request = self.state.update_merge_request(request_id, metadata={
-            'stage': 'merging', 'expected_head': request['head'],
-            'review_artifacts': metadata.get('artifacts', {}),
-            'reason': decision['reason'],
-        })
+        request = self.state.update_merge_request(request_id, metadata=dict(
+            request['metadata'],
+            stage='merging', expected_head=request['head'],
+            review_artifacts=metadata.get('artifacts', {}),
+            reason=decision['reason'],
+        ))
         head = merge_ff(self.config['mainline_worktree'], attempt['branch'])
         self._record_merged(request, attempt, head, request['metadata'])
 
     def _record_merged(self, request, attempt, head, metadata):
         config = self._promote_baseline({
-            'artifacts': metadata.get('review_artifacts', {})})
+            'artifacts': metadata.get('inspection_artifacts', {})})
         self.state.finalize_merge_request(
             request['id'], head, campaign_config=config, result={'head': head})
         self.state.add_finding(
