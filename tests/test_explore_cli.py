@@ -75,7 +75,7 @@ def workflow_env(monkeypatch, tmp_path, repo):
                 'protected': ['.tq/**', 'tests/**'],
             },
             'inspection': {},
-            'validation': {'checks': [], 'min_improvement': 0},
+            'validation': {'gpus': 0, 'checks': [], 'min_improvement': 0},
             'merge': {
                 'review_prompt': '$objective $artifacts',
                 'rebase_prompt': '$objective $artifacts',
@@ -253,6 +253,7 @@ def test_start_creates_mainline_state_and_registers_controller(
         'agent', 'run', '--label', 'safe; still one arg', '{}',
     ]
     assert campaign['config']['phases']['validation']['checks'] == ['pytest -q']
+    assert campaign['config']['phases']['validation']['gpus'] == 0
     assert campaign['config']['phases']['optimization']['protected_paths'] == [
         '.tq/**', 'tests/**', 'fixtures/**',
     ]
@@ -344,6 +345,14 @@ def test_start_rejects_negative_maximums(workflow_env, option):
 
     with pytest.raises(BackendError, match='maximums cannot be negative'):
         workflow.start('invalid campaign', **option)
+
+
+def test_start_rejects_negative_validation_gpus(workflow_env):
+    workflow, _, _ = workflow_env
+    workflow.config['explore']['validation']['gpus'] = -1
+
+    with pytest.raises(BackendError, match='validation GPUs cannot be negative'):
+        workflow.start('invalid GPU request')
 
 
 def test_workflow_status_and_inspect_report_attempt_diff(

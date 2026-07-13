@@ -29,6 +29,7 @@ def test_default_config_exposes_explore_phases():
     assert explore['timeout'] == 30 * 60
     assert explore['optimization']['parallel'] == 4
     assert explore['optimization']['max_adjustments'] == 3
+    assert explore['validation']['gpus'] == 0
     assert explore['merge']['max_accepted_attempts'] == 0
     assert explore['controller']['max_wall_time'] == 8 * 60 * 60
     assert explore['optimization']['max_files'] == 0

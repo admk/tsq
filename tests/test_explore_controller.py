@@ -178,7 +178,7 @@ def campaign(tmp_path):
                     'response_repair_prompt': '$original_prompt $error',
                 },
                 'validation': {
-                    'checks': [], 'score': None, 'score_direction': None,
+                    'gpus': 0, 'checks': [], 'score': None, 'score_direction': None,
                     'min_improvement': 0, 'timeout': 1800,
                 },
                 'merge': {
@@ -260,6 +260,24 @@ def test_job_timeout_comes_from_its_phase(campaign):
         {'start_time': started}, {'role': 'planner', 'metadata': {}})
     assert not campaign.controller._overdue(
         {'start_time': started}, {'role': 'optimizer', 'metadata': {}})
+
+
+def test_only_validation_jobs_request_configured_gpus(campaign):
+    config = dict(campaign.controller.config)
+    config['phases'] = dict(config['phases'])
+    config['phases']['validation'] = dict(
+        config['phases']['validation'], gpus=2)
+    campaign.state.update_campaign('c1', config=config)
+
+    campaign.controller._queue_baseline()
+    validation = campaign.backend.add_calls[-1]
+    campaign.controller._queue_agent('optimizer', 'change code', campaign.mainline)
+    optimization = campaign.backend.add_calls[-1]
+
+    assert validation['metadata']['role'] == 'validation'
+    assert validation['gpus'] == 2
+    assert optimization['metadata']['role'] == 'optimizer'
+    assert optimization['gpus'] == 0
 
 
 def test_mutation_retry_recognizes_snapshot_from_crashed_controller(campaign):
@@ -366,6 +384,18 @@ def test_system_gate_overrides_reviewer_accept(campaign):
     assert decision['decision'] == 'adjust'
     assert 'system-controlled acceptance gate' in decision['reason']
     assert campaign.state.list_merge_requests('c1') == []
+    assert len(campaign.state.list_jobs(campaign_id='c1', role='adjust')) == 1
+
+
+def test_adjustment_cap_applies_after_failed_acceptance_gate(campaign):
+    attempt = campaign.attempt('adjustment-cap')
+    campaign.state.update_attempt(attempt['id'], adjustments=2)
+    campaign.queue_review(attempt, decision='accept', eligible=False)
+
+    campaign.controller.reconcile()
+
+    assert campaign.state.get_attempt(attempt['id'])['status'] == 'abandoned'
+    assert campaign.state.list_jobs(campaign_id='c1', role='adjust') == []
 
 
 def test_invalid_reviewer_gets_one_schema_repair_turn(campaign):

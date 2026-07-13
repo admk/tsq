@@ -446,7 +446,8 @@ class ExploreController:
         try:
             self._queue_job(
                 'validation', command, cwd, attempt['id'],
-                attempt['direction_id'], metadata={
+                attempt['direction_id'],
+                gpus=self._phase('validation').get('gpus', 0), metadata={
                     'phase': phase, 'artifacts': artifacts,
                     'merge_request_id': merge_request_id,
                     'validation_cwd': str(cwd),
@@ -805,6 +806,7 @@ class ExploreController:
             self._queue_job(
                 'validation', [sys.executable, '-I', VALIDATION_SCRIPT,
                                '--spec', str(spec_path)], cwd,
+                gpus=self._phase('validation').get('gpus', 0),
                 metadata={
                     'phase': 'baseline', 'artifacts': {},
                     'validation_cwd': str(cwd), 'expected_head': head,
@@ -907,13 +909,14 @@ class ExploreController:
 
     def _queue_job(
         self, role, argv, cwd, attempt_id=None, direction_id=None,
-        slots=1, internal=False, metadata=None,
+        gpus=0, slots=1, internal=False, metadata=None,
     ):
         metadata = dict(metadata or {})
         if self._current_event_id is not None:
             metadata['source_event_id'] = self._current_event_id
         backend_id = self.backend.add(
-            shlex.join([str(value) for value in argv]), gpus=0, slots=slots,
+            shlex.join([str(value) for value in argv]),
+            gpus=int(gpus), slots=slots,
             cwd=str(cwd), internal=internal, workspace_owner='campaign',
             metadata={
                 'campaign_id': self.campaign_id, 'attempt_id': attempt_id,

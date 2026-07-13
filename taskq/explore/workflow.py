@@ -155,6 +155,7 @@ class ExploreWorkflow:
                 max_lines = int(_option(overrides, optimization, 'max_lines', 300))
                 min_improvement = float(_option(
                     overrides, validation, 'min_improvement', 0))
+                validation_gpus = int(validation.get('gpus', 0))
                 controller_interval = float(controller.get('interval', 5))
                 controller_timeout = float(controller.get('heartbeat_timeout', 30))
                 timeouts = {
@@ -173,6 +174,8 @@ class ExploreWorkflow:
             if min(max_adjustments, max_accepted_attempts, max_time,
                    max_files, max_lines) < 0:
                 raise BackendError('exploration maximums cannot be negative')
+            if validation_gpus < 0:
+                raise BackendError('validation GPUs cannot be negative')
             if min_improvement < 0:
                 raise BackendError('minimum improvement cannot be negative')
             budgets = {
@@ -233,6 +236,7 @@ class ExploreWorkflow:
                         'timeout': timeouts['inspection'],
                     },
                     'validation': {
+                        'gpus': validation_gpus,
                         'checks': checks,
                         'score': score,
                         'score_direction': score_direction,

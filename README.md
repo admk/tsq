@@ -132,7 +132,7 @@ Configuration is divided by execution phase:
 | Phase | Responsibility |
 | --- | --- |
 | `planning` | Generate distinct directions without editing code. |
-| `optimization` | Create and adjust candidate changes in worktrees. |
+| `optimization` | Make CPU-only implementation-code changes in worktrees. |
 | `inspection` | Independently review completed attempts. |
 | `validation` | Run trusted checks and comparative scoring. |
 | `merge` | Rebase, review, and serialize accepted attempts. |
@@ -150,10 +150,16 @@ Each attempt runs the configured agent in its own branch-backed worktree.
 Actual concurrency is capped by both `explore.optimization.parallel` and the selected
 queue's available slots. Planner batches prioritize independent directions
 that can execute concurrently with minimal overlap or ordering dependencies.
+Optimizer jobs receive no GPUs and leave checks and benchmarks to the
+validation phase. Set `explore.validation.gpus` when those commands require
+GPU allocation.
 When an attempt finishes, a fresh reviewer autonomously inspects its status,
 diff, and trusted checks or scores, then accepts it, requests an adjustment,
-abandons it, or asks for more evidence. Checks and scoring are optional, but
+abandons it, or stops the campaign. Checks and scoring are optional, but
 when supplied they are hard acceptance gates and cannot be waived by agents.
+A failed candidate validation can be sent back for another optimization when
+the reviewer chooses `adjust`, up to `optimization.max_adjustments`; baseline
+validation failure instead fails the campaign.
 
 Accepted attempts enter a FIFO merge queue. They are rebased, reviewed, and
 merged one at a time into a campaign mainline; conflicts are returned to an
@@ -216,6 +222,7 @@ protected = [".tq/**", "test/**", "tests/**", "benchmark/**", "benchmarks/**"]
 [explore.inspection]
 
 [explore.validation]
+gpus = 0
 checks = []
 min_improvement = 0.0
 
