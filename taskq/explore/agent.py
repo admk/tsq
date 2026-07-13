@@ -15,7 +15,6 @@ REVIEW_DECISIONS = frozenset({
     'accept',
     'adjust',
     'abandon',
-    'evaluate_more',
     'stop',
 })
 TASKQ_JSON_PREFIX = 'TASKQ_JSON:'

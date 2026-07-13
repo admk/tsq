@@ -564,9 +564,6 @@ class ExploreController:
                 self._queue_adjustment(attempt, decision)
             else:
                 self.state.update_attempt(attempt['id'], status='deferred')
-        elif (value == 'evaluate_more' and self._has_validation() and
-              self.campaign['status'] == 'active'):
-            self._queue_validation(attempt, 'inspection', {'reevaluation': True})
         elif value == 'stop':
             self.state.update_campaign(self.campaign_id, status='draining')
             self.state.update_attempt(attempt['id'], status='stopped')
