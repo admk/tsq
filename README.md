@@ -166,8 +166,8 @@ merged one at a time into a campaign mainline; conflicts are returned to an
 agent in the attempt worktree. Conflict resolution preserves current mainline
 behavior first and the accepted optimization second. If they are incompatible,
 the attempt branch is abandoned and the reason is recorded in campaign memory.
-While this queue is non-empty, existing work
-may finish and be reviewed, but no new direction starts. Once it drains,
+While this queue is non-empty, existing work may finish, be reviewed, and
+receive adjustments, but no new direction starts. Once it drains,
 planning resumes from the updated mainline. The final mainline is
 fast-forwarded automatically when safe. If the target has diverged, taskq
 prints the manual merge command and waits for the user to resolve conflicts.

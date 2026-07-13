@@ -561,10 +561,8 @@ class ExploreController:
                 self.budgets['max_adjustments'], attempt['adjustments']
             ):
                 self._abandon(attempt, 'adjustment limit reached')
-            elif self.state.merge_queue_empty(self.campaign_id) and self._free_slots() > 0:
-                self._queue_adjustment(attempt, decision)
             else:
-                self.state.update_attempt(attempt['id'], status='deferred')
+                self._queue_adjustment(attempt, decision)
         elif value == 'stop':
             self.state.update_campaign(self.campaign_id, status='draining')
             self.state.update_attempt(attempt['id'], status='stopped')

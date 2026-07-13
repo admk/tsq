@@ -632,7 +632,7 @@ def test_conflict_resolver_abandons_branch_and_records_reason(campaign):
     assert not Path(attempt['worktree']).exists()
 
 
-def test_adjustment_is_deferred_while_merge_queue_is_nonempty(campaign):
+def test_adjustment_continues_while_merge_queue_is_nonempty(campaign):
     queued = campaign.attempt('queued')
     campaign.state.enqueue_merge_request('c1', queued['id'], queued['head'])
     candidate = campaign.attempt('adjust')
@@ -640,8 +640,9 @@ def test_adjustment_is_deferred_while_merge_queue_is_nonempty(campaign):
 
     campaign.controller.reconcile()
 
-    assert campaign.state.get_attempt(candidate['id'])['status'] == 'deferred'
-    assert campaign.state.list_jobs(campaign_id='c1', role='adjust') == []
+    assert campaign.state.get_attempt(candidate['id'])['status'] == 'active'
+    jobs = campaign.state.list_jobs(campaign_id='c1', role='adjust')
+    assert [job['attempt_id'] for job in jobs] == [candidate['id']]
 
 
 def test_expired_deadline_enters_landing_without_allocating(campaign):
