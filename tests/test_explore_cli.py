@@ -41,9 +41,17 @@ class StubTmuxBackend:
         self.state_dir = Path(state_dir)
         self.config = config or {'slots': 4, 'queue': 'default'}
         self.registrations = []
+        self.unregistered = []
+        self.removed = []
 
     def register_controller(self, *args):
         self.registrations.append(args)
+
+    def unregister_controller(self, name):
+        self.unregistered.append(name)
+
+    def remove(self, info):
+        self.removed.append(info['id'])
 
 
 @pytest.fixture
@@ -103,8 +111,10 @@ def test_explore_action_is_registered_and_help_lists_subcommands(capsys):
     assert error.value.code == 0
     output = capsys.readouterr().out
     assert 'run autonomous optimization campaigns' in CLI().parser.format_help()
-    assert '{start,status,inspect,pause,resume,stop}' in output
+    assert '{init,start,remove,status,inspect,pause,resume,stop}' in output
     assert '--cmd' in output
+    assert '--yes' in output
+    assert '--name' not in output
     assert '--max-accepted-attempts' in output
     assert '--max-merges' not in output
 
@@ -115,6 +125,31 @@ def test_explore_start_forwards_accepted_attempt_limit(
     import taskq.actions.explore as explore_action
 
     calls = []
+
+    class Profile:
+        name = 'latency'
+        objective = 'reduce latency'
+        complete = True
+
+    class StubStore:
+        def __init__(self, root, config):
+            pass
+
+        @staticmethod
+        def validate_name(name):
+            return name
+
+        @staticmethod
+        def create(name):
+            return Profile()
+
+        @staticmethod
+        def load(name):
+            return Profile()
+
+        @staticmethod
+        def effective_config(profile):
+            return {'explore': {}}
 
     class StubWorkflow:
         def __init__(self, backend, config):
@@ -127,15 +162,103 @@ def test_explore_start_forwards_accepted_attempt_limit(
     rc = tmp_path / 'config.toml'
     rc.write_text('backend = "dummy"\n', encoding='utf-8')
     monkeypatch.setattr(explore_action, 'ExploreWorkflow', StubWorkflow)
+    monkeypatch.setattr(explore_action, 'ExploreProfileStore', StubStore)
+    monkeypatch.setattr(explore_action, 'repository_root', lambda cwd: tmp_path)
+    monkeypatch.setattr(explore_action, 'ensure_local_exclude', lambda root: None)
 
     CLI().main([
-        '-rc', str(rc), 'explore', 'start', 'reduce latency',
+        '-rc', str(rc), 'explore', 'start', 'latency',
         '--max-accepted-attempts', '2',
     ])
 
     assert calls[0][0] == 'reduce latency'
+    assert calls[0][1]['profile_name'] == 'latency'
     assert calls[0][1]['max_accepted_attempts'] == 2
     assert capsys.readouterr().out == 'Started exploration campaign-1 on main.\n'
+
+
+def test_explore_init_scaffolds_named_profile(
+    monkeypatch, tmp_path, capsys,
+):
+    import taskq.actions.explore as explore_action
+
+    class StubWizard:
+        def __init__(self, store, profile):
+            self.store = store
+            self.profile = profile
+
+        def run(self, restart_complete=True):
+            self.profile.metadata['complete'] = True
+            self.store.save(self.profile)
+            return 0
+
+    rc = tmp_path / 'config.toml'
+    rc.write_text('backend = "dummy"\n', encoding='utf-8')
+    monkeypatch.setattr(explore_action, 'repository_root', lambda cwd: tmp_path)
+    monkeypatch.setattr(explore_action, 'ensure_local_exclude', lambda root: None)
+    monkeypatch.setattr(explore_action, 'interactive', lambda: True)
+    monkeypatch.setattr(explore_action, 'ExploreInitWizard', StubWizard)
+
+    assert CLI().main([
+        '-rc', str(rc), 'explore', 'init', 'latency',
+    ]) == 0
+
+    profile = tmp_path / '.tq' / 'explore' / 'latency'
+    assert (profile / 'config.toml').is_file()
+    assert len(list((profile / 'prompts').glob('*.md'))) == 7
+    assert capsys.readouterr().err == ''
+
+
+def test_explore_remove_yes_deletes_profile_and_finished_runs(
+    monkeypatch, tmp_path, capsys,
+):
+    import taskq.actions.explore as explore_action
+
+    calls = []
+
+    class Profile:
+        name = 'latency'
+        path = tmp_path / '.tq' / 'explore' / 'latency'
+
+    class StubStore:
+        def __init__(self, root, config):
+            pass
+
+        @staticmethod
+        def load(name):
+            return Profile()
+
+        @staticmethod
+        def remove(name):
+            calls.append(('remove-profile', name))
+
+    class StubWorkflow:
+        def __init__(self, backend, config):
+            pass
+
+        @staticmethod
+        def profile_campaigns(root, name):
+            return [{'id': 'run-1', 'status': 'completed'}]
+
+        @staticmethod
+        def remove_finished_profile_campaigns(root, name):
+            calls.append(('remove-runs', name))
+            return [{'id': 'run-1'}]
+
+    rc = tmp_path / 'config.toml'
+    rc.write_text('backend = "dummy"\n', encoding='utf-8')
+    monkeypatch.setattr(explore_action, 'ExploreProfileStore', StubStore)
+    monkeypatch.setattr(explore_action, 'ExploreWorkflow', StubWorkflow)
+    monkeypatch.setattr(explore_action, 'repository_root', lambda cwd: tmp_path)
+    monkeypatch.setattr(explore_action, 'ensure_local_exclude', lambda root: None)
+
+    assert CLI().main([
+        '-rc', str(rc), 'explore', 'remove', 'latency', '--yes',
+    ]) == 0
+
+    assert calls == [('remove-runs', 'latency'), ('remove-profile', 'latency')]
+    assert 'Removed profile latency and 1 finished campaign(s).' in (
+        capsys.readouterr().out)
 
 
 def test_explore_list_output_uses_workflow(monkeypatch, tmp_path, capsys):
@@ -235,7 +358,7 @@ def test_start_creates_mainline_state_and_registers_controller(
     workflow, backend, reconciled = workflow_env
 
     campaign = workflow.start(
-        'reduce latency', name='latency',
+        'reduce latency', profile_name='latency',
         command='agent run --label "safe; still one arg" "{}"',
         checks=['pytest -q'], score='python bench.py', score_direction='min',
         min_improvement=2.5, protect=['fixtures/**'], parallel=2,
@@ -259,6 +382,7 @@ def test_start_creates_mainline_state_and_registers_controller(
     ]
     assert campaign['budgets']['parallel'] == 2
     assert campaign['config']['phases']['validation']['min_improvement'] == 2.5
+    assert campaign['config']['profile_name'] == 'latency'
     assert reconciled == [campaign_id]
 
     assert len(backend.registrations) == 1
@@ -495,3 +619,32 @@ def test_pause_resume_and_stop_persist_and_reconcile(workflow_env):
     assert stopped['status'] == 'draining'
     assert len(backend.registrations) == 3
     assert reconciled == [campaign_id, campaign_id, campaign_id]
+
+
+def test_remove_finished_profile_campaigns_deletes_history_and_artifacts(
+    workflow_env, repo,
+):
+    workflow, backend, _ = workflow_env
+    campaign = workflow.start('reduce latency', profile_name='latency')
+    state_path = repo / '.tq' / 'explore' / 'state.sqlite'
+    with ExploreState(state_path) as state:
+        state.update_campaign(campaign['id'], status='completed')
+
+    removed = workflow.remove_finished_profile_campaigns(repo, 'latency')
+
+    assert [item['id'] for item in removed] == [campaign['id']]
+    with ExploreState(state_path) as state:
+        assert state.get_campaign(campaign['id']) is None
+    assert campaign['id'] in backend.unregistered
+    assert not Path(campaign['config']['work_root']).exists()
+
+
+def test_remove_profile_campaigns_refuses_active_run(workflow_env, repo):
+    workflow, _, _ = workflow_env
+    campaign = workflow.start('reduce latency', profile_name='latency')
+
+    with pytest.raises(BackendError, match='active campaigns'):
+        workflow.remove_finished_profile_campaigns(repo, 'latency')
+
+    with ExploreState(repo / '.tq' / 'explore' / 'state.sqlite') as state:
+        assert state.get_campaign(campaign['id']) is not None

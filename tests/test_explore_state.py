@@ -205,3 +205,29 @@ def test_direction_fingerprints_are_unique_per_campaign(state):
     state.add_direction('c1', 'd1', 'one', 'same')
     with pytest.raises(sqlite3.IntegrityError):
         state.add_direction('c1', 'd2', 'two', 'same')
+
+
+def test_delete_campaigns_removes_finished_history_but_keeps_project_memory(state):
+    add_campaign(state)
+    attempt_id = add_attempt(state)
+    state.add_job('c1', 'job-1', 'optimizer', attempt_id=attempt_id)
+    state.add_terminal_event('job-1', 'success')
+    state.add_finding(
+        'campaign finding', 'confirmed', campaign_id='c1',
+        dedupe_key='campaign-finding')
+    state.add_finding(
+        'project finding', 'confirmed', dedupe_key='project-finding')
+    state.update_campaign('c1', status='completed')
+
+    assert state.delete_campaigns(['c1']) == 1
+
+    assert state.get_campaign('c1') is None
+    assert state.list_jobs(campaign_id='c1') == []
+    assert [item['claim'] for item in state.list_findings()] == ['project finding']
+
+
+def test_delete_campaigns_refuses_active_history(state):
+    add_campaign(state)
+
+    with pytest.raises(ValueError, match='active campaigns'):
+        state.delete_campaigns(['c1'])

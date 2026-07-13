@@ -89,13 +89,16 @@ class ExploreWorkflow:
             raise BackendError('no exploration campaigns found')
         return values[0]
 
-    def start(self, objective, **overrides):
+    def start(
+        self, objective, profile_name=None, profile_config=None, **overrides,
+    ):
         if not objective or not objective.strip():
             raise BackendError('exploration objective cannot be empty')
         root, target_ref, target_head = repository(Path.cwd())
-        require_clean(root)
         ensure_local_exclude(root)
-        explore = _plain(self.config.get('explore', {}))
+        require_clean(root)
+        source_config = profile_config or self.config
+        explore = _plain(source_config.get('explore', {}))
         phase_names = (
             'planning', 'optimization', 'inspection', 'validation',
             'merge', 'controller')
@@ -123,7 +126,7 @@ class ExploreWorkflow:
         score_direction = _option(overrides, validation, 'score_direction')
         if score and score_direction not in {'min', 'max'}:
             raise BackendError('--score-direction min|max is required with --score')
-        identifier = campaign_id(overrides.get('name') or objective)
+        identifier = campaign_id(profile_name or overrides.get('name') or objective)
         work_root = Path(self.backend.state_dir) / 'explore' / identifier
         mainline_worktree = work_root / 'mainline'
         control_cwd = work_root / 'control'
@@ -205,6 +208,7 @@ class ExploreWorkflow:
                 'control_cwd': str(control_cwd),
                 'heartbeat_file': str(heartbeat_file),
                 'backend_config': _plain(self.backend.config),
+                'profile_name': profile_name,
                 'phases': {
                     'planning': {
                         'command': commands['planning'],
@@ -307,6 +311,45 @@ class ExploreWorkflow:
             return []
         with ExploreState(path) as state:
             return [_public_campaign(item) for item in state.list_campaigns()]
+
+    def profile_campaigns(self, root, profile_name):
+        path = self._state_path(root)
+        if not path.exists():
+            return []
+        with ExploreState(path) as state:
+            return [
+                campaign for campaign in state.list_campaigns()
+                if campaign['config'].get('profile_name') == profile_name
+            ]
+
+    def remove_finished_profile_campaigns(self, root, profile_name):
+        campaigns = self.profile_campaigns(root, profile_name)
+        active = [
+            campaign['id'] for campaign in campaigns
+            if campaign['status'] not in {'completed', 'failed'}
+        ]
+        if active:
+            raise BackendError(
+                'profile has active campaigns: {}'.format(', '.join(active)))
+        for campaign in campaigns:
+            self.backend.unregister_controller(campaign['id'])
+            config = campaign['config']
+            work_root = config.get('work_root')
+            if work_root:
+                git_ref_utils.remove_nested_worktrees(work_root)
+                shutil.rmtree(work_root, ignore_errors=True)
+        path = self._state_path(root)
+        if campaigns and path.exists():
+            with ExploreState(path) as state:
+                for campaign in campaigns:
+                    for job in state.list_jobs(campaign_id=campaign['id']):
+                        try:
+                            self.backend.remove({'id': int(job['backend_job_id'])})
+                        except (BackendError, FileNotFoundError, OSError):
+                            pass
+                state.delete_campaigns(
+                    [campaign['id'] for campaign in campaigns])
+        return campaigns
 
     def status(self, campaign=None):
         root = repository(Path.cwd())[0]

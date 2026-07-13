@@ -22,9 +22,13 @@ def git(cwd, *args, check=True):
 
 
 def repository(cwd):
-    root = git(cwd, 'rev-parse', '--show-toplevel')
+    root = repository_root(cwd)
     branch = git(root, 'symbolic-ref', '--short', 'HEAD')
     return root, branch, git(root, 'rev-parse', 'HEAD')
+
+
+def repository_root(cwd):
+    return git(cwd, 'rev-parse', '--show-toplevel')
 
 
 def require_clean(cwd):

@@ -396,6 +396,36 @@ class ExploreState:
                 'SELECT * FROM campaigns WHERE id = ?', (campaign_id,)
             ).fetchone())
 
+    def delete_campaigns(self, campaign_ids):
+        """Delete finished campaign history and all campaign-scoped memory."""
+        campaign_ids = list(dict.fromkeys(campaign_ids))
+        if not campaign_ids:
+            return 0
+        placeholders = ','.join('?' for _ in campaign_ids)
+        where = 'campaign_id IN ({})'.format(placeholders)
+        with self._transaction() as db:
+            rows = db.execute(
+                'SELECT id, status FROM campaigns WHERE id IN ({})'.format(
+                    placeholders), campaign_ids).fetchall()
+            unfinished = [
+                row['id'] for row in rows
+                if row['status'] not in {'completed', 'failed'}]
+            if unfinished:
+                raise ValueError(
+                    'cannot delete active campaigns: {}'.format(
+                        ', '.join(sorted(unfinished))))
+            for table in (
+                'reviewer_decisions', 'findings', 'merge_requests',
+                'terminal_events', 'jobs', 'attempts', 'directions',
+                'outbox', 'audit_events',
+            ):
+                db.execute(
+                    'DELETE FROM {} WHERE {}'.format(table, where), campaign_ids)
+            db.execute(
+                'DELETE FROM campaigns WHERE id IN ({})'.format(placeholders),
+                campaign_ids)
+            return len(rows)
+
     def heartbeat(self, campaign_id, controller_id=None, at=None):
         at = _timestamp(at)
         with self._transaction() as db:

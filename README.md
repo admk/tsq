@@ -114,10 +114,8 @@ Merging changes back is manual.
 `tmux` backend. Start from a clean, attached local branch:
 
 ```sh
-tq explore start "reduce broker latency" \
-  --check 'pytest -q' \
-  --score 'python benchmarks/broker.py' \
-  --score-direction min
+tq explore init broker-latency
+tq explore start broker-latency
 
 tq explore
 tq explore status
@@ -125,7 +123,22 @@ tq explore inspect
 tq explore pause
 tq explore resume
 tq explore stop
+tq explore remove broker-latency
 ```
+
+`tq explore init [NAME]` opens a keyboard-driven wizard for a reusable project
+profile. Without a name, existing profiles are shown as radios alongside a
+Create option. After profile selection, all onboarding fields are shown in an
+inline form. Text values show the resolved project default in dim grey; Enter
+commits and advances, Up and Down move between fields, and Ctrl-C aborts
+without rolling back committed items. Resume with `tq explore init NAME`.
+
+Profiles live under `.tq/explore/NAME/` with operational settings in
+`config.toml` and editable Markdown prompts in `prompts/`. Starting without a
+name opens the same profile picker. A profile stores its campaign objective;
+start-time flags such as `--parallel` remain available as one-run overrides.
+Removing a profile also removes its finished campaign history and memory, but
+is refused while any associated campaign is active.
 
 Configuration is divided by execution phase:
 
@@ -439,7 +452,9 @@ are `id`, `status`, `slots`, `gpus`, `gpu_ids`, `enqueue`,
 
 | Command | Purpose |
 | --- | --- |
-| `tq explore start OBJECTIVE` | Start a tmux-only campaign from the clean current branch. |
+| `tq explore init [PROFILE]` | Create, edit, or resume a project exploration profile. |
+| `tq explore start [PROFILE]` | Start the selected profile from the clean current branch. |
+| `tq explore remove PROFILE [--yes]` | Remove a profile and its finished campaign history; refuse active runs. |
 | `tq explore` | List active and recent campaigns. |
 | `tq explore status [CAMPAIGN]` | Show campaign progress, attempts, and merge queue. |
 | `tq explore inspect [CAMPAIGN] [ATTEMPT]` | Show an attempt's decisions, evidence, and diff. |
