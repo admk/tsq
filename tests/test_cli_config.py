@@ -53,6 +53,10 @@ def test_load_config_uses_packaged_defaults_without_local_rc(tmp_path, monkeypat
     config = CLI()._load_config(args)
 
     assert config['alloc']['gpus'] == 0
+    assert config['explore']['planning']['prompt'].startswith('Plan ')
+    assert config['explore']['planning']['prompt'] != 'planning.md'
+    assert config['explore']['initialization']['prompt'].startswith(
+        'Configure ')
     assert args.rc_file == str(tmp_path / f'.{TOOL_NAME}' / 'config.toml')
 
 

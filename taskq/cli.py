@@ -39,6 +39,7 @@ class CLI:
     }
     rc_path = f'.{TOOL_NAME}/config.toml'
     default_config = 'default.toml'
+    prompt_asset_package = 'taskq.prompts'
 
     def __init__(self):
         super().__init__()
@@ -63,7 +64,8 @@ class CLI:
                     'taskq', self.default_config, encoding='utf-8') as stream:
                     text = stream.read()
             config = tomlkit.loads(text)
-        except (FileNotFoundError, tomlkit.exceptions.ParseError) as e:
+            self._hydrate_prompt_assets(config)
+        except (FileNotFoundError, ValueError, tomlkit.exceptions.ParseError) as e:
             print(f'Error parsing default config: {e}')
         if args.rc_file:
             with open(args.rc_file, 'r', encoding='utf-8') as f:
@@ -91,6 +93,31 @@ class CLI:
             except FileNotFoundError:
                 pass
         return config
+
+    def _hydrate_prompt_assets(self, mapping):
+        for key, value in list(mapping.items()):
+            if isinstance(value, dict):
+                self._hydrate_prompt_assets(value)
+                continue
+            if not key.endswith('prompt'):
+                continue
+            if not isinstance(value, str) or not value.endswith('.md'):
+                continue
+            if '/' in value or '\\' in value:
+                raise ValueError('invalid built-in prompt asset: {!r}'.format(value))
+            try:
+                if hasattr(resources, 'files'):
+                    text = resources.files(self.prompt_asset_package).joinpath(
+                        value).read_text(encoding='utf-8')
+                else:  # Python 3.8 compatibility.
+                    with resources.open_text(
+                        self.prompt_asset_package, value,
+                        encoding='utf-8') as stream:
+                        text = stream.read()
+            except FileNotFoundError as error:
+                raise ValueError(
+                    'built-in prompt asset not found: {}'.format(value)) from error
+            mapping[key] = text
 
     def _resolve_config(self, args, config):
         backend = args.backend or config.get('backend', 'tmux')

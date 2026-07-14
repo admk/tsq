@@ -42,6 +42,7 @@ include = ["taskq", "taskq.*"]
 
 [tool.setuptools.package-data]
 "taskq" = ["default.toml"]
+"taskq.prompts" = ["*.md"]
 "taskq.backends.tmux" = ["wrapper.sh", "default.conf"]
 
 [tool.setuptools.dynamic]

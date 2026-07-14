@@ -72,6 +72,9 @@ class ProfileInitializer:
                 if not isinstance(template, str) or not template.strip():
                     error_text = 'missing initialization {}'.format(template_key)
                     break
+                if attempt == 2:
+                    template = '{}\n\n{}'.format(
+                        self.config.get('prompt', ''), template)
                 state['attempts'] = attempt
                 prompt = Template(template).safe_substitute(
                     objective=self.profile.objective,
