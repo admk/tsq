@@ -12,7 +12,7 @@ from taskq.explore.profiles import (
     ExploreProfileStore, read_objective, write_objective,
 )
 from taskq.explore.wizard import (
-    FIELDS, ExploreInitWizard, _display_width, _render_text_line,
+    FIELDS, ExploreInitWizard, WizardAbort, _display_width, _render_text_line,
     confirm_remove, prompt_objective,
     validate_generated_document,
 )
@@ -457,6 +457,23 @@ def test_generation_draft_abort_reprompts_before_launch(
     state = json.loads(store.generation_path(profile).read_text(encoding='utf-8'))
     assert state['objective_prompt'] == brief
     assert profile.objective == 'profile'
+
+
+def test_wizard_preserves_generation_detach_message(tmp_path, monkeypatch):
+    store = ExploreProfileStore(tmp_path, resolved_config())
+    profile = store.create('profile')
+    output = io.StringIO()
+    wizard = ExploreInitWizard(store, profile, stream=output)
+    message = 'Detached from tq job 23; the job continues in the background.'
+
+    def detach():
+        raise WizardAbort(message)
+
+    monkeypatch.setattr(wizard, '_prepare_generation', detach)
+
+    assert wizard.run() == 130
+    assert message in output.getvalue()
+    assert 'paused' not in output.getvalue().lower()
 
 
 def test_killed_generation_can_revise_brief_on_first_resume(tmp_path):

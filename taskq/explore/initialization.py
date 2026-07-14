@@ -62,8 +62,8 @@ class ProfileInitializer:
         try:
             command = parse_command_template(command)
             timeout = float(self.config.get('timeout', 600))
-            if timeout <= 0:
-                raise ValueError('initialization timeout must be positive')
+            if timeout < 0:
+                raise ValueError('initialization timeout cannot be negative')
         except (TypeError, ValueError) as error:
             self._fallback(str(error), 0)
             return False
@@ -169,7 +169,7 @@ class ProfileInitializer:
                     process = subprocess.Popen(
                         render_command(command, prompt), cwd=worktree,
                         env=initialization_env)
-                    process.wait(timeout=timeout)
+                    process.wait(timeout=timeout or None)
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
@@ -414,14 +414,16 @@ class ProfileInitializationJob:
 
         if job is not None and job.get('status') in self.ACTIVE:
             self._print(
-                'Profile generation is running in tq job {}.'.format(job['id']))
+                'Profile generation is in tq job {}.'.format(job['id']))
             self._print(
-                'Detach without stopping it, or reattach later with: tq interact {}'.format(
-                    job['id']))
+                'Detach normally; the job will continue in the background.')
             try:
                 self.backend.interact(job)
             except KeyboardInterrupt as error:
-                raise InitializationInterrupted() from error
+                raise InitializationInterrupted(
+                    'Stopped interacting with tq job {}.\n'
+                    'Resume with: tq explore init {}'.format(
+                        job['id'], self.profile.name)) from error
 
         state = self.store.read_generation(self.profile)
         job_id = state.get('backend_job_id') or (
@@ -563,7 +565,7 @@ class ProfileInitializationJob:
             return True
         job_status = job.get('status') if job else None
         if job_status in self.ACTIVE:
-            self._pause(job.get('id'))
+            self._pause(job.get('id'), active=True)
         if job_status in self.RETRYABLE:
             state = self._mark_interrupted(state, job_status)
             if state.get('run_token') != run_token:
@@ -583,16 +585,23 @@ class ProfileInitializationJob:
             self._print('Generation output: tq outputs {}'.format(job['id']))
         return True
 
-    def _pause(self, job_id):
-        if job_id is not None:
-            self._print(
-                'Profile generation paused. Reattach with: tq interact {}'.format(
-                    job_id))
-        raise InitializationInterrupted()
+    def _pause(self, job_id, active=False):
+        if active and job_id is not None:
+            message = (
+                'Detached from tq job {}; the job continues in the background.\n'
+                'Reattach with: tq interact {}'.format(job_id, job_id))
+        else:
+            detail = ' in tq job {}'.format(job_id) if job_id is not None else ''
+            message = (
+                'Profile generation was interrupted{}.\n'
+                'Resume with: tq explore init {}'.format(
+                    detail, self.profile.name))
+        raise InitializationInterrupted(message)
 
     def _superseded(self):
-        self._print('Profile generation request was superseded.')
-        raise InitializationInterrupted()
+        raise InitializationInterrupted(
+            'Profile generation request was superseded.\n'
+            'Run again with: tq explore init {}'.format(self.profile.name))
 
 
 def _json_copy(value):

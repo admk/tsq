@@ -50,8 +50,9 @@ response_repair_prompt = "response-repair.md"
 
 [explore.initialization]
 # Interactive setup agent queued as a tq job when creating a profile.
-command = ["codex", "exec", "--ephemeral", "--sandbox", "workspace-write", "{}"]
-timeout = 600
+command = ["codex", "exec", "--ephemeral", "--config", "model_reasoning_effort=medium", "--sandbox", "workspace-write", "{}"]
+# Maximum runtime in seconds; set to 0 for no limit.
+timeout = 0
 prompt = "initialization.md"
 repair_prompt = "initialization-repair.md"
 

@@ -511,10 +511,11 @@ class ExploreInitWizard:
     def run(self, restart_complete=True):
         try:
             self._prepare_generation()
-        except WizardAbort:
-            print(
+        except WizardAbort as error:
+            message = str(error) or (
                 'Initialization paused. Resume with: tq explore init {}'.format(
-                    self.profile.name), file=self.stream)
+                    self.profile.name))
+            print(message, file=self.stream)
             return 130
         if restart_complete and self.profile.complete:
             self.profile.metadata['complete'] = False
@@ -584,11 +585,12 @@ class ExploreInitWizard:
                 self.profile.metadata['cursor'] = len(FIELDS)
                 self.store.save(self.profile)
                 self._write('\n')
-        except WizardAbort:
+        except WizardAbort as error:
             self._write('\n')
-            print(
+            message = str(error) or (
                 'Initialization paused. Resume with: tq explore init {}'.format(
-                    self.profile.name), file=self.stream)
+                    self.profile.name))
+            print(message, file=self.stream)
             return 130
         return 0
 
@@ -626,7 +628,7 @@ class ExploreInitWizard:
                     objective_prompt=generation.get('objective_prompt'),
                     stream=self.stream).reconcile_interrupted()
             except InitializationInterrupted as error:
-                raise WizardAbort() from error
+                raise WizardAbort(str(error)) from error
             status = generation.get('status')
             editable = status in {'draft', 'ready', 'interrupted'}
             active = (
@@ -661,7 +663,7 @@ class ExploreInitWizard:
                 objective_prompt=objective_prompt,
                 stream=self.stream).run()
         except InitializationInterrupted as error:
-            raise WizardAbort() from error
+            raise WizardAbort(str(error)) from error
         self.profile = self.store.load(self.profile.name)
 
     def _write(self, value):

@@ -27,6 +27,7 @@ def test_default_config_exposes_explore_phases():
     }
     assert set(explore['initialization']) == {
         'command', 'timeout', 'prompt', 'repair_prompt'}
+    assert explore['initialization']['timeout'] == 0
     assert explore['command'].count('{}') == 1
     assert explore['timeout'] == 30 * 60
     assert explore['env'] == {}

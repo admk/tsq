@@ -92,8 +92,10 @@ class FakeBackend:
             self.on_interact(self, info['id'])
 
 
+@pytest.mark.parametrize(
+    ('timeout', 'expected_wait'), [(0, None), (30, 30)])
 def test_initializer_uses_original_root_and_resolved_environment(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, timeout, expected_wait,
 ):
     root = repo_with_commit(tmp_path)
     resolved = config()
@@ -140,7 +142,7 @@ def test_initializer_uses_original_root_and_resolved_environment(
 
     initialization_config = dict(resolved['explore']['initialization'])
     initialization_config.update({
-        'command': ['setup-agent', '{}'], 'timeout': 30})
+        'command': ['setup-agent', '{}'], 'timeout': timeout})
     result = ProfileInitializer(
         store, profile, initialization_config,
         objective_prompt='Brief request for the setup agent.',
@@ -157,7 +159,7 @@ def test_initializer_uses_original_root_and_resolved_environment(
     assert '${TASKQ_REPO_ROOT}/.venv' in captured['argv'][-1]
     assert '`$$` produces a literal dollar' in captured['argv'][-1]
     assert 'Brief request for the setup agent.' in captured['argv'][-1]
-    assert captured['timeout'] == 30
+    assert captured['timeout'] == expected_wait
     assert captured['stdio_keys'] == []
     assert not captured['cwd'].exists()
     assert store.load('environment').objective == 'Generated campaign objective.'
@@ -285,7 +287,7 @@ def test_initialization_job_detach_resumes_same_backend_job(tmp_path):
     first = ProfileInitializationJob(
         store, profile, resolved['explore']['initialization'], backend,
         objective_prompt='Objective brief.', stream=output)
-    with pytest.raises(InitializationInterrupted):
+    with pytest.raises(InitializationInterrupted) as first_detach:
         first.run()
 
     second = ProfileInitializationJob(
@@ -293,12 +295,14 @@ def test_initialization_job_detach_resumes_same_backend_job(tmp_path):
         resolved['explore']['initialization'], backend,
         objective_prompt='A replacement must not supersede saved state.',
         stream=output)
-    with pytest.raises(InitializationInterrupted):
+    with pytest.raises(InitializationInterrupted) as second_detach:
         second.run()
 
     assert len(backend.add_calls) == 1
     assert backend.interact_calls == [1, 1]
-    assert 'tq interact 1' in output.getvalue()
+    assert 'continues' in str(first_detach.value)
+    assert 'tq interact 1' in str(second_detach.value)
+    assert 'paused' not in str(first_detach.value).lower()
     generation = json.loads(
         store.generation_path(profile).read_text(encoding='utf-8'))
     assert generation['objective_prompt'] == 'Objective brief.'
@@ -403,11 +407,12 @@ def test_initialization_job_interrupted_state_does_not_requeue(tmp_path):
         profile, status='interrupted', run_token='old',
         backend_job_id='4', config={}, objective_prompt='Old brief')
 
-    with pytest.raises(InitializationInterrupted):
+    with pytest.raises(InitializationInterrupted) as interrupted:
         ProfileInitializationJob(
             store, profile, {}, backend, stream=io.StringIO()).run()
 
     assert backend.add_calls == []
+    assert 'was interrupted' in str(interrupted.value)
 
 
 @pytest.mark.parametrize('job_status', ['failed', 'killed', 'interrupted'])
