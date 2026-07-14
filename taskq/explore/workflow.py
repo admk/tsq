@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shlex
 import shutil
@@ -13,6 +14,7 @@ from .controller import ExploreController
 from .git import campaign_id, diff, ensure_local_exclude, repository, require_clean
 from .state import ExploreState
 from .assets import copy_assets, inventory
+from .environment import EnvironmentConfigError, resolve_environment
 
 
 def _plain(value):
@@ -33,6 +35,9 @@ def _public_campaign(campaign):
     campaign = dict(campaign)
     config = dict(campaign.get('config') or {})
     config.pop('backend_config', None)
+    if config.get('env'):
+        config['env'] = {
+            name: '<redacted>' for name in config['env']}
     campaign['config'] = config
     return campaign
 
@@ -91,6 +96,14 @@ class ExploreWorkflow:
         require_clean(root)
         source_config = profile_config or self.config
         explore = _plain(source_config.get('explore', {}))
+        inherited_environment = dict(
+            getattr(self.backend, 'env', {}) or {})
+        inherited_environment.update(os.environ)
+        try:
+            campaign_environment = resolve_environment(
+                explore.get('env', {}), root, inherited_environment)
+        except EnvironmentConfigError as error:
+            raise BackendError(str(error)) from error
         phase_names = (
             'planning', 'optimization', 'inspection', 'validation',
             'merge', 'controller', 'initialization')
@@ -207,6 +220,7 @@ class ExploreWorkflow:
                 'heartbeat_file': str(heartbeat_file),
                 'backend_config': _plain(self.backend.config),
                 'profile_name': profile_name,
+                'env': campaign_environment,
                 'asset_snapshot': str(asset_snapshot),
                 'asset_manifest': asset_manifest,
                 'phases': {

@@ -121,6 +121,21 @@ def test_generated_profile_uses_wizard_validation_and_rejects_unknown_keys(
         validate_generated_document(profile.document, generated)
 
 
+def test_generated_profile_accepts_campaign_environment_mapping(tmp_path):
+    store = ExploreProfileStore(tmp_path, resolved_config())
+    profile = store.create('profile')
+    generated = copy.deepcopy(profile.document)
+    generated['explore']['env'] = {
+        'VIRTUAL_ENV': '${TASKQ_REPO_ROOT}/.venv',
+        'PATH': '${VIRTUAL_ENV}/bin:${PATH}',
+    }
+
+    validate_generated_document(profile.document, generated)
+
+    field = next(field for field in FIELDS if field.path == ('explore', 'env'))
+    assert field.display(generated).startswith('{"VIRTUAL_ENV":')
+
+
 class Style(str):
     def __call__(self, value):
         return str(value)

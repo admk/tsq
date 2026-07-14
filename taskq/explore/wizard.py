@@ -9,6 +9,7 @@ from blessed import Terminal
 
 from ..backends.base import BackendError
 from .agent import parse_command_template
+from .environment import validate_environment
 from .profiles import delete_value, get_value, set_value
 
 
@@ -154,6 +155,11 @@ def _string_list(value):
     return result
 
 
+def _environment(value):
+    result = json.loads(value)
+    return validate_environment(result)
+
+
 def _text(value):
     value = value.strip()
     if not value:
@@ -188,6 +194,8 @@ class Field:
         value = get_value(document, self.path)
         if value is None and self.fallback:
             value = get_value(document, self.fallback)
+        if value is None and self.parser is _environment:
+            value = {}
         return value
 
     def display(self, document):
@@ -196,7 +204,7 @@ class Field:
             return value
         if self.parser is _command and isinstance(value, list):
             return shlex.join(value)
-        if isinstance(value, list):
+        if isinstance(value, (list, dict)):
             return json.dumps(value, ensure_ascii=False)
         if isinstance(value, bool):
             return 'true' if value else 'false'
@@ -233,6 +241,12 @@ FIELDS = (
     Field(
         'Common timeout', ('explore', 'timeout'), _duration,
         comment='Default phase runtime limit unless that phase overrides it.'),
+    Field(
+        'Campaign environment (JSON object)', ('explore', 'env'), _environment,
+        comment=(
+            'Environment overrides sent to every campaign phase. Values may '
+            'reference inherited variables and ${TASKQ_REPO_ROOT}.'),
+    ),
     Field('Planning command', ('explore', 'planning', 'command'), _command,
           fallback=('explore', 'command'),
           comment='Read-only agent command that proposes optimization directions.'),

@@ -21,7 +21,7 @@ def test_default_config_exposes_explore_phases():
     explore = config['explore']
 
     assert set(explore) == {
-        'command', 'timeout', 'response_repair_prompt',
+        'command', 'timeout', 'env', 'response_repair_prompt',
         'planning', 'optimization', 'inspection', 'validation',
         'merge', 'controller', 'initialization',
     }
@@ -29,6 +29,7 @@ def test_default_config_exposes_explore_phases():
         'command', 'timeout', 'prompt', 'repair_prompt'}
     assert explore['command'].count('{}') == 1
     assert explore['timeout'] == 30 * 60
+    assert explore['env'] == {}
     assert explore['optimization']['parallel'] == 4
     assert explore['optimization']['max_adjustments'] == 3
     assert explore['validation']['gpus'] == 0

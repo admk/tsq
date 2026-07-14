@@ -77,6 +77,54 @@ a phase override only when that phase needs a different command or sandbox.
 Use positive numeric seconds for every generated timeout. This is accepted
 consistently by both wizard validation and campaign execution.
 
+## Campaign environment
+
+`explore.env` is a TOML mapping of environment variable names to string values.
+Taskq resolves it when the campaign starts and sends the resulting overrides to
+every planner, optimizer, adjustment, reviewer, validator, and rebase job.
+Names must match `[A-Za-z_][A-Za-z0-9_]*`; values must be strings. Do not store
+API keys, tokens, passwords, or other secrets in the profile. Names beginning
+with `TASKQ_` are reserved and cannot be configured.
+
+Values may use shell-style `$NAME` or `${NAME}` references. References expand
+from the campaign-start process environment; references to another configured
+key use that key's configured value. A self-reference such as
+`PATH = "/tools/bin:${PATH}"` appends or prepends to the inherited value.
+Undefined references and cycles are rejected. `$$$$` produces a literal dollar.
+
+Taskq provides `${TASKQ_REPO_ROOT}` during expansion as the absolute path of the
+original checkout from which the campaign was started. This is how worktrees
+can share a virtualenv stored in the main checkout without embedding the
+temporary initialization or campaign-worktree path:
+
+```toml
+[explore.env]
+VIRTUAL_ENV = "${TASKQ_REPO_ROOT}/.venv"
+PATH = "${TASKQ_REPO_ROOT}/.venv/bin:${PATH}"
+```
+
+Use this only when that virtualenv actually exists in the original checkout and
+is safe for concurrent, read-only use. Campaign jobs must not install, upgrade,
+or remove packages in a shared environment. Be careful with editable installs
+and generated console entry points: they may import source from the original
+checkout instead of the candidate worktree. Prefer `python -m ...` commands
+that run project code from the job's current repository when the project
+supports them. Prefer the repository's documented environment location; do not
+guess a venv path.
+
+Values newly proposed by the setup agent cannot alter its already-running
+process. This initialization process receives any environment already present
+in the scaffold, inherits the invoking shell's environment, and receives
+`TASKQ_REPO_ROOT=$source_root`. Relevant non-secret path variables visible
+during this setup turn are:
+
+```json
+$host_environment
+```
+
+These values are context, not instructions to copy the entire host environment
+into the profile. Never persist `TASKQ_INIT_WORKTREE`; that path is disposable.
+
 ## Optimization and merge limits
 
 - `explore.optimization.parallel`: integer at least 1; maximum concurrent

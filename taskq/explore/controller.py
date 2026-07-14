@@ -913,9 +913,13 @@ class ExploreController:
         metadata = dict(metadata or {})
         if self._current_event_id is not None:
             metadata['source_event_id'] = self._current_event_id
+        job_environment = dict(getattr(self.backend, 'env', {}) or {})
+        job_environment.update(os.environ)
+        job_environment.update(self.config.get('env') or {})
         backend_id = self.backend.add(
             shlex.join([str(value) for value in argv]),
             gpus=int(gpus), slots=slots,
+            env=job_environment,
             cwd=str(cwd), internal=internal, workspace_owner='campaign',
             metadata={
                 'campaign_id': self.campaign_id, 'attempt_id': attempt_id,

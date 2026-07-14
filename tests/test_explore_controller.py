@@ -280,6 +280,25 @@ def test_only_validation_jobs_request_configured_gpus(campaign):
     assert optimization['gpus'] == 0
 
 
+def test_campaign_environment_overrides_are_sent_to_phase_jobs(
+    campaign, monkeypatch,
+):
+    monkeypatch.setenv('PATH', '/controller/bin')
+    config = campaign.state.get_campaign('c1')['config']
+    config['env'] = {
+        'PATH': '/main/.venv/bin:/usr/bin',
+        'VIRTUAL_ENV': '/main/.venv',
+    }
+    campaign.state.update_campaign('c1', config=config)
+
+    campaign.controller._queue_agent(
+        'planner', 'prompt', campaign.mainline)
+
+    environment = campaign.backend.add_calls[-1]['env']
+    assert environment['PATH'] == '/main/.venv/bin:/usr/bin'
+    assert environment['VIRTUAL_ENV'] == '/main/.venv'
+
+
 def test_mutation_retry_recognizes_snapshot_from_crashed_controller(campaign):
     attempt = campaign.attempt('snapshot-retry')
     Path(attempt['worktree'], 'app.txt').write_text('candidate\n', encoding='utf-8')

@@ -1,5 +1,7 @@
 """Agent-assisted initialization of new exploration profiles."""
 
+import json
+import os
 import shutil
 import stat
 import subprocess
@@ -14,6 +16,11 @@ from ..backends import git_ref as git_ref_utils
 from ..backends.base import BackendError
 from .agent import parse_command_template, render_command
 from .assets import copy_assets, inventory
+from .environment import (
+    ENVIRONMENT_NAME,
+    EnvironmentConfigError,
+    resolve_environment,
+)
 from .git import git
 from .profiles import ExploreProfile
 from .wizard import import_generated_values, validate_generated_document
@@ -54,7 +61,33 @@ class ProfileInitializer:
             self.profile, status='pending', source_commit=head,
             attempts=0, errors=[], asset_hashes=[])
         log_path = self.profile.path / 'generation.log'
+        initialization_env = {
+            str(key): str(value)
+            for key, value in self.store.resolved_config.get('env', {}).items()
+            if (value and ENVIRONMENT_NAME.fullmatch(str(key)) and
+                '\0' not in str(value))
+        }
+        initialization_env.update(os.environ)
+        initialization_env.update({
+            'TASKQ_REPO_ROOT': str(root),
+        })
+        campaign_base_environment = dict(initialization_env)
+        try:
+            initialization_env.update(resolve_environment(
+                self.profile.document.get('explore', {}).get('env', {}),
+                root, initialization_env))
+        except EnvironmentConfigError as error:
+            self._fallback(str(error), 0)
+            return False
         worktree = Path(tempfile.mkdtemp(prefix='tq-explore-init-'))
+        initialization_env['TASKQ_INIT_WORKTREE'] = str(worktree)
+        environment_context = {
+            key: initialization_env[key]
+            for key in (
+                'TASKQ_REPO_ROOT', 'VIRTUAL_ENV', 'CONDA_PREFIX',
+                'UV_PROJECT_ENVIRONMENT', 'PYTHONPATH', 'PATH')
+            if initialization_env.get(key)
+        }
         registered = False
         try:
             shutil.rmtree(worktree)
@@ -79,7 +112,10 @@ class ProfileInitializer:
                 prompt = Template(template).safe_substitute(
                     objective=self.profile.objective,
                     profile_path=relative.as_posix(),
-                    repository=str(worktree), error=error_text)
+                    repository=str(worktree), source_root=str(root),
+                    host_environment=json.dumps(
+                        environment_context, indent=2, sort_keys=True),
+                    error=error_text)
                 self._print(
                     'Generating profile settings (attempt {}, elapsed 0s)…'.format(
                         attempt))
@@ -88,6 +124,7 @@ class ProfileInitializer:
                 try:
                     process = subprocess.Popen(
                         render_command(command, prompt), cwd=worktree,
+                        env=initialization_env,
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                         text=True)
                     output, _ = process.communicate(timeout=timeout)
@@ -125,6 +162,9 @@ class ProfileInitializer:
                         worktree, generated_path, head, protected_files)
                     generated = self._load_generated(generated_path)
                     validate_generated_document(self.profile.document, generated.document)
+                    resolve_environment(
+                        generated.document.get('explore', {}).get('env', {}),
+                        root, campaign_base_environment)
                     assets = inventory(generated_path / 'assets')
                     self._import(generated, generated_path / 'assets', assets)
                     self.store.save_generation(

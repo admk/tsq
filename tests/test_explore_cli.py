@@ -217,6 +217,24 @@ def test_campaign_snapshots_profile_assets(workflow_env, repo):
         'protected_paths']
 
 
+def test_campaign_resolves_profile_environment_at_start(
+    workflow_env, repo, monkeypatch,
+):
+    workflow, _backend, _reconciled = workflow_env
+    monkeypatch.setenv('PATH', '/usr/bin')
+    workflow.config['explore']['env'] = {
+        'PATH': '${VIRTUAL_ENV}/bin:${PATH}',
+        'VIRTUAL_ENV': '${TASKQ_REPO_ROOT}/.venv',
+    }
+
+    campaign = workflow.start('share environment', profile_name='environment')
+
+    assert campaign['config']['env'] == {
+        'PATH': '{}/.venv/bin:/usr/bin'.format(repo),
+        'VIRTUAL_ENV': '{}/.venv'.format(repo),
+    }
+
+
 def test_explore_init_scaffolds_named_profile(
     monkeypatch, tmp_path, capsys,
 ):

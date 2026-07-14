@@ -42,6 +42,9 @@ slots = 1
 command = ["codex", "exec", "--ephemeral", "{}"]
 # Default maximum runtime in seconds for one phase job.
 timeout = 1800
+# Environment overrides sent to every campaign phase. Values may reference
+# inherited variables and ${TASKQ_REPO_ROOT}, resolved when a campaign starts.
+env = {}
 # Used after a planner or reviewer returns an invalid structured response.
 response_repair_prompt = "response-repair.md"
 
