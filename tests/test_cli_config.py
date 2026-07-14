@@ -58,6 +58,10 @@ def test_load_config_uses_packaged_defaults_without_local_rc(tmp_path, monkeypat
     assert config['explore']['planning']['prompt'] != 'planning.md'
     assert config['explore']['initialization']['prompt'].startswith(
         'Configure ')
+    assert '$objective_prompt' in config['explore']['initialization']['prompt']
+    assert 'objective.md' in config['explore']['initialization']['prompt']
+    assert '$objective_prompt' in config['explore']['initialization'][
+        'repair_prompt']
     assert args.rc_file == str(tmp_path / f'.{TOOL_NAME}' / 'config.toml')
 
 

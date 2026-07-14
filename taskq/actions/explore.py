@@ -43,7 +43,13 @@ class ExploreAction(ActionBase):
 
     @staticmethod
     def _campaign_line(campaign):
-        return '{id}  {status}  {objective}'.format(**campaign)
+        values = dict(campaign)
+        values['objective'] = next(
+            (line.strip() for line in str(campaign.get('objective', '')).splitlines()
+             if line.strip()),
+            '',
+        )
+        return '{id}  {status}  {objective}'.format(**values)
 
     def main(self, args):
         action = args.explore_action
@@ -60,7 +66,8 @@ class ExploreAction(ActionBase):
                 return 130
             existed = name in store.list()
             profile = store.create(name)
-            wizard = ExploreInitWizard(store, profile)
+            wizard = ExploreInitWizard(
+                store, profile, backend=self.backend)
             wizard.new_profile = not existed
             result = wizard.run(restart_complete=True)
             if not result:
@@ -118,7 +125,8 @@ class ExploreAction(ActionBase):
                     raise CLIError(
                         'profile is incomplete; resume with: tq explore init {}'.format(
                             name))
-                result = ExploreInitWizard(store, profile).run(
+                result = ExploreInitWizard(
+                    store, profile, backend=self.backend).run(
                     restart_complete=False)
                 if result:
                     return result

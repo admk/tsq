@@ -1,10 +1,14 @@
 """Project-local exploration profiles and prompt files."""
 
 import copy
+import fcntl
 import json
 import os
 import re
 import shutil
+import threading
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +20,7 @@ from ..common import dict_merge
 
 PROFILE_VERSION = 1
 PROFILE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
+OBJECTIVE_FILENAME = 'objective.md'
 PHASES = (
     'planning', 'optimization', 'inspection', 'validation',
     'merge', 'controller',
@@ -31,6 +36,52 @@ PROMPTS = (
 )
 ASSET_MAX_FILES = 64
 ASSET_MAX_BYTES = 2 * 1024 * 1024
+_ANY_RUN_TOKEN = object()
+
+
+def _objective_path(profile_path):
+    root = Path(profile_path)
+    if not root.is_dir():
+        raise BackendError('profile directory not found: {}'.format(root))
+    return root / OBJECTIVE_FILENAME
+
+
+def _objective_text(value):
+    if not isinstance(value, str):
+        raise BackendError('profile objective must be text')
+    value = value.replace('\r\n', '\n').replace('\r', '\n')
+    value = value.strip()
+    if not value:
+        raise BackendError('profile objective cannot be empty')
+    return value
+
+
+def read_objective(profile_path):
+    """Read and validate a profile-root objective.md file."""
+    path = _objective_path(profile_path)
+    if not path.exists():
+        raise BackendError('profile objective file not found: {}'.format(path))
+    if not path.is_file():
+        raise BackendError('profile objective must be a regular file: {}'.format(path))
+    try:
+        value = path.read_text(encoding='utf-8')
+    except UnicodeDecodeError as error:
+        raise BackendError(
+            'profile objective must be valid UTF-8: {}'.format(path)) from error
+    except OSError as error:
+        raise BackendError(
+            'profile objective file is not readable: {}'.format(path)) from error
+    return _objective_text(value)
+
+
+def write_objective(profile_path, value):
+    """Validate and atomically write a profile-root objective.md file."""
+    path = _objective_path(profile_path)
+    value = _objective_text(value)
+    if path.exists() and not path.is_file():
+        raise BackendError('profile objective must be a regular file: {}'.format(path))
+    ExploreProfileStore._atomic_text(path, value + '\n')
+    return value
 
 
 def _plain(value):
@@ -86,7 +137,7 @@ class ExploreProfile:
 
     @property
     def objective(self):
-        return str(self.metadata.get('objective') or '').strip()
+        return read_objective(self.path)
 
     @property
     def complete(self):
@@ -99,6 +150,9 @@ class ExploreProfile:
 
 class ExploreProfileStore:
     """Create, update, load, and remove named project profiles."""
+
+    _generation_thread_locks = {}
+    _generation_thread_locks_guard = threading.Lock()
 
     def __init__(self, root, resolved_config):
         self.root = Path(root).resolve()
@@ -162,11 +216,11 @@ class ExploreProfileStore:
         document['profile'] = {
             'version': PROFILE_VERSION,
             'name': name,
-            'objective': default_objective,
             'complete': False,
             'cursor': 0,
         }
         document['explore'] = explore
+        write_objective(path, default_objective)
         self.save_document(path, document)
         return ExploreProfile(name, path, document)
 
@@ -209,13 +263,37 @@ class ExploreProfileStore:
             raise BackendError('invalid profile metadata: {}'.format(config_path))
         if not isinstance(document.get('explore'), dict):
             raise BackendError('profile is missing [explore]: {}'.format(config_path))
-        return ExploreProfile(name, path, document)
+        profile = ExploreProfile(name, path, document)
+        self._migrate_objective(profile)
+        return profile
+
+    def _migrate_objective(self, profile):
+        marker = object()
+        legacy = profile.metadata.get('objective', marker)
+        path = profile.path / OBJECTIVE_FILENAME
+        if not path.exists():
+            if legacy is marker:
+                raise BackendError(
+                    'profile objective file not found: {}'.format(path))
+            self.save_objective(profile, legacy)
+        self.read_objective(profile)
+        if legacy is not marker:
+            del profile.metadata['objective']
+            self.save(profile)
 
     def save(self, profile):
         self.save_document(profile.path, profile.document)
 
     def save_document(self, path, document):
         self._atomic_text(Path(path) / 'config.toml', tomlkit.dumps(document))
+
+    @staticmethod
+    def read_objective(profile):
+        return read_objective(profile.path)
+
+    @staticmethod
+    def save_objective(profile, value):
+        return write_objective(profile.path, value)
 
     def effective_config(self, profile):
         config = copy.deepcopy(self.resolved_config)
@@ -235,35 +313,99 @@ class ExploreProfileStore:
     def generation_path(self, profile):
         return profile.path / 'generation.json'
 
-    def save_generation(self, profile, **values):
-        current = {}
+    def read_generation(self, profile):
+        with self.generation_lock(profile):
+            return self._read_generation_unlocked(profile)
+
+    def save_generation(
+        self, profile, expected_run_token=_ANY_RUN_TOKEN, **values,
+    ):
+        with self.edit_generation(profile, expected_run_token) as current:
+            if current is None:
+                return None
+            current.update(values)
+            return current
+
+    @contextmanager
+    def edit_generation(self, profile, expected_run_token=_ANY_RUN_TOKEN):
+        """Lock, conditionally edit, and atomically persist generation state."""
+        with self.generation_lock(profile):
+            current = self._read_generation_unlocked(profile)
+            if (
+                expected_run_token is not _ANY_RUN_TOKEN and
+                current.get('run_token') != expected_run_token
+            ):
+                yield None
+                return
+            yield current
+            self._write_generation_unlocked(profile, current)
+
+    @contextmanager
+    def generation_lock(self, profile):
+        """Serialize generation-state handoffs across threads and processes."""
+        # Keep the lock outside the removable profile directory. Otherwise a
+        # removal can unlink the locked inode and let an old worker acquire a
+        # different lock while recreating the same profile path.
+        path = self.base / '.locks' / '{}.generation.lock'.format(profile.name)
+        key = str(path.resolve())
+        with self._generation_thread_locks_guard:
+            thread_lock = self._generation_thread_locks.setdefault(
+                key, threading.RLock())
+        with thread_lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'a+', encoding='utf-8') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _read_generation_unlocked(self, profile):
         path = self.generation_path(profile)
         if path.is_file():
             try:
                 current = json.loads(path.read_text(encoding='utf-8'))
             except (OSError, ValueError):
-                current = {}
-        current.update(values)
+                return {}
+            return current if isinstance(current, dict) else {}
+        return {}
+
+    def _write_generation_unlocked(self, profile, current):
+        path = self.generation_path(profile)
         self._atomic_text(path, json.dumps(
             current, indent=2, sort_keys=True) + '\n')
-        return current
 
     def remove(self, name):
         path = self.profile_dir(name)
         if not path.exists():
             raise BackendError('exploration profile not found: {}'.format(name))
-        shutil.rmtree(path)
+        profile = self.load(name)
+        with self.generation_lock(profile):
+            shutil.rmtree(path)
 
     @staticmethod
     def _atomic_text(path, value):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(path.name + '.tmp')
-        with open(temporary, 'w', encoding='utf-8') as stream:
-            stream.write(value)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        temporary = path.with_name(
+            '.{}.{}.{}.tmp'.format(path.name, os.getpid(), uuid.uuid4().hex))
+        descriptor = os.open(
+            str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        try:
+            stream = os.fdopen(descriptor, 'w', encoding='utf-8')
+            descriptor = None
+            with stream:
+                stream.write(value)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
 
     @staticmethod
     def _read_prompt(profile_path, relative):

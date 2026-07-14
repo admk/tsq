@@ -1,7 +1,7 @@
 Configure a new taskq exploration profile for this repository.
 
-Campaign objective:
-$objective
+Objective-generation prompt from the user:
+$objective_prompt
 
 ## What you are configuring
 
@@ -31,6 +31,21 @@ A campaign uses these phases and roles:
 5. **inspection** independently reviews the candidate plus validation evidence;
 6. **merge** rebases, reviews, and integrates accepted candidates serially.
 
+## Final campaign objective
+
+Treat the user's objective-generation prompt as source material, not as the
+final campaign objective. Inspect the committed repository and write a refined,
+repository-specific objective to `$profile_path/objective.md`. That Markdown
+file is the authoritative objective included by the planning prompt and later
+snapshotted into campaign state.
+
+The objective must preserve the user's intent while making the desired outcome,
+relevant scope and constraints, and observable success evidence clear. Ground
+repository-specific claims in files you inspect. Do not merely copy the user's
+prompt, prescribe speculative implementation details, or invent a numeric
+metric that the repository cannot support. The file must be non-empty UTF-8
+plain text and may use multiple Markdown paragraphs or lists.
+
 The profile's `config.toml` already contains safe built-in values. Change a
 value only when repository evidence supports a better project-specific choice.
 Your values will become editable defaults in the interactive wizard, not final
@@ -38,6 +53,7 @@ unreviewable decisions.
 
 ## Files you may change
 
+- Create or edit `$profile_path/objective.md` as described above.
 - Edit only the wizard-managed configuration keys documented below.
 - You may add regular files beneath `$profile_path/assets/` for trusted
   validation support.
@@ -275,9 +291,10 @@ units exist: inspect and use the project's real documented interface.
 
 ## Final consistency pass
 
-Before finishing, inspect the edited TOML and assets without executing them.
-Confirm that commands are valid argv, timeouts and limits have valid ranges,
-protected paths preserve evaluator integrity, referenced repository and asset
-files exist, required executables and dependencies are expected in the later
-validation environment, score settings are complete, asset references use
-`.tq/explore-assets/`, and no forbidden file or configuration key changed.
+Before finishing, inspect `objective.md`, the edited TOML, and assets without
+executing them. Confirm that the objective is a repository-grounded refinement
+of the user's prompt, commands are valid argv, timeouts and limits have valid
+ranges, protected paths preserve evaluator integrity, referenced repository and
+asset files exist, required executables and dependencies are expected in the
+later validation environment, score settings are complete, asset references
+use `.tq/explore-assets/`, and no forbidden file or configuration key changed.

@@ -135,12 +135,24 @@ project default in dim grey; Enter commits and advances, Up and Down move
 between fields, Tab moves forward, and Ctrl-C aborts without rolling back
 committed items. Resume with `tq explore init NAME`.
 
-Profiles live under `.tq/explore/NAME/` with operational settings in
-`config.toml` and editable Markdown prompts in `prompts/`. Starting without a
-name opens the same profile picker. A profile stores its campaign objective
-and all campaign settings; edit them with `tq explore init NAME`.
+Agent-assisted profile generation runs as a regular `tq` job and attaches to
+its tmux pane, so setup output and interactive prompts remain visible. Detach
+with tmux's normal detach binding to let generation continue; `tq explore init
+NAME` reattaches to an active generation job. If the worker is interrupted
+before it completes, the next init reopens the generation brief before
+submitting a replacement job.
+
+Profiles live under `.tq/explore/NAME/` with the authoritative campaign
+objective in `objective.md`, operational settings in `config.toml`, and editable
+Markdown prompts in `prompts/`. The initial text supplied to profile generation
+is a brief for the setup agent; the agent refines it against repository evidence
+and writes `objective.md` rather than treating that brief as the final objective.
+The objective may contain multiple Markdown paragraphs or lists. Existing
+profiles that stored an objective in `config.toml` are migrated to
+`objective.md` when loaded. Starting without a name opens the same profile
+picker. Edit a profile with `tq explore init NAME`.
 Removing a profile also removes its finished campaign history and memory, but
-is refused while any associated campaign is active.
+is refused while an associated campaign is active.
 
 Configuration is divided by execution phase:
 
@@ -160,6 +172,9 @@ Templates use `$name` placeholders such as `$objective`, `$direction`,
 `$memory`, `$artifacts`, `$context`, `$direction_count`, and `$change_scope`;
 write `$$` for a literal dollar sign. The shared
 `explore.response_repair_prompt` controls structured-response repair turns.
+For profile campaigns, `$objective` is the complete contents of `objective.md`.
+Those contents are snapshotted when the campaign starts, so later profile edits
+do not change the objective of an active campaign.
 
 Each attempt runs the configured agent in its own branch-backed worktree.
 Actual concurrency is capped by both `explore.optimization.parallel` and the selected

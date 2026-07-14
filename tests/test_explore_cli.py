@@ -7,6 +7,7 @@ import pytest
 from taskq.actions.base import INFO
 from taskq.backends.base import BackendError
 from taskq.cli import CLI
+from taskq.explore.profiles import ExploreProfileStore
 from taskq.explore.state import ExploreState
 from taskq.explore.git import ensure_local_exclude
 from taskq.explore.workflow import ExploreWorkflow
@@ -217,6 +218,29 @@ def test_campaign_snapshots_profile_assets(workflow_env, repo):
         'protected_paths']
 
 
+def test_campaign_snapshots_multiline_profile_objective(workflow_env, repo):
+    workflow, _backend, _reconciled = workflow_env
+    store = ExploreProfileStore(repo, workflow.config)
+    profile = store.create('multiline-objective')
+    objective = (
+        'Reduce request latency.\n\n'
+        '- Preserve compatibility.\n'
+        '- Demonstrate the result with the benchmark.'
+    )
+    store.save_objective(profile, objective)
+
+    campaign = workflow.start(
+        profile.objective,
+        profile_name=profile.name,
+        profile_config=store.effective_config(profile),
+    )
+    store.save_objective(profile, 'A later profile edit.')
+
+    state = ExploreState(repo / '.tq' / 'explore' / 'state.sqlite')
+    assert campaign['objective'] == objective
+    assert state.get_campaign(campaign['id'])['objective'] == objective
+
+
 def test_campaign_resolves_profile_environment_at_start(
     workflow_env, repo, monkeypatch,
 ):
@@ -240,10 +264,13 @@ def test_explore_init_scaffolds_named_profile(
 ):
     import taskq.actions.explore as explore_action
 
+    seen = {}
+
     class StubWizard:
-        def __init__(self, store, profile):
+        def __init__(self, store, profile, backend=None):
             self.store = store
             self.profile = profile
+            seen['backend'] = backend
 
         def run(self, restart_complete=True):
             self.profile.metadata['complete'] = True
@@ -264,6 +291,7 @@ def test_explore_init_scaffolds_named_profile(
     profile = tmp_path / '.tq' / 'explore' / 'latency'
     assert (profile / 'config.toml').is_file()
     assert len(list((profile / 'prompts').glob('*.md'))) == 7
+    assert seen['backend'].name == 'dummy'
     assert capsys.readouterr().err == ''
 
 
@@ -346,6 +374,16 @@ def test_explore_list_output_uses_workflow(monkeypatch, tmp_path, capsys):
         'status': 'active',
         'objective': 'reduce latency',
     }]
+
+
+def test_explore_campaign_line_uses_first_objective_line():
+    from taskq.actions.explore import ExploreAction
+
+    assert ExploreAction._campaign_line({
+        'id': 'campaign-1',
+        'status': 'active',
+        'objective': 'Reduce latency.\n\n- Preserve compatibility.',
+    }) == 'campaign-1  active  Reduce latency.'
 
 
 def test_explore_rejects_non_tmux_backend(tmp_path, capsys):

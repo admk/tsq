@@ -3,9 +3,11 @@
 import json
 import shlex
 import sys
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 from blessed import Terminal
+from wcwidth import wcswidth
 
 from ..backends.base import BackendError
 from .agent import parse_command_template
@@ -90,6 +92,105 @@ def _comment(term, value):
     return (_format(term, 'italic', '\x1b[3m') +
             _format(term, 'dim', '\x1b[2m') + value +
             _format(term, 'normal', '\x1b[0m'))
+
+
+def _screen_text(value):
+    """Render control characters without letting input change terminal rows."""
+    controls = {'\n': '↵', '\r': '↵', '\t': '⇥'}
+    return ''.join(
+        controls.get(character, character if character.isprintable() else '�')
+        for character in str(value)
+    )
+
+
+def _display_width(value):
+    width = wcswidth(_screen_text(value))
+    return max(0, width)
+
+
+def _terminal_width(term):
+    try:
+        return max(4, int(getattr(term, 'width', 80) or 80))
+    except (TypeError, ValueError):
+        return 80
+
+
+def _clip_text(value, width):
+    """Return a display-safe prefix no wider than ``width`` cells."""
+    if width <= 0:
+        return ''
+    value = str(value)
+    end = 0
+    for candidate in range(1, len(value) + 1):
+        if _display_width(value[:candidate]) > width:
+            break
+        end = candidate
+    return _screen_text(value[:end])
+
+
+def _text_viewport(value, cursor, width):
+    """Return a horizontal viewport and its display-cell cursor offset."""
+    value = str(value)
+    cursor = max(0, min(len(value), int(cursor)))
+    if width <= 0:
+        return '', 0
+
+    start = cursor
+    while start:
+        if _display_width(value[start - 1:cursor]) > width:
+            break
+        start -= 1
+    end = cursor
+    while end < len(value):
+        if _display_width(value[start:end + 1]) > width:
+            break
+        end += 1
+    return (
+        _screen_text(value[start:end]),
+        _display_width(value[start:cursor]),
+    )
+
+
+def _render_text_line(term, value, cursor, placeholder='', error=''):
+    """Render one non-wrapping response row and return its cursor column."""
+    prefix_width = _display_width(RESPONSE_PREFIX)
+    # Leaving one cell unused prevents terminals with eager right-margin wrap
+    # from moving the form's logical one-line response onto a second row.
+    available = max(1, _terminal_width(term) - prefix_width - 1)
+    error_text = '  Error: ' + error if error else ''
+    error_width = min(_display_width(error_text), available // 2)
+    shown_error = _clip_text(error_text, error_width)
+    input_width = max(1, available - _display_width(shown_error))
+
+    if value:
+        shown, cursor_offset = _text_viewport(value, cursor, input_width)
+    else:
+        shown = _dim(term, _clip_text(placeholder, input_width))
+        cursor_offset = 0
+    suffix = _red(term, shown_error) if shown_error else ''
+    column = min(
+        _terminal_width(term) - 1,
+        prefix_width + cursor_offset,
+    )
+    return _clear_line(term) + RESPONSE_PREFIX + shown + suffix, column
+
+
+def _input_text(key):
+    """Return printable key or bracketed-paste payload text."""
+    name = getattr(key, 'name', None)
+    if name == 'BRACKETED_PASTE':
+        value = getattr(key, 'text', None)
+        if not isinstance(value, str):
+            value = str(key)
+        return value
+    value = str(key)
+    return value if not name and value.isprintable() else ''
+
+
+def _paste_context(term):
+    """Enable aggregate paste events when supported by the terminal object."""
+    bracketed_paste = getattr(term, 'bracketed_paste', None)
+    return bracketed_paste() if bracketed_paste else nullcontext()
 
 
 def _key(reader):
@@ -233,7 +334,7 @@ def _score_enabled(document):
 
 FIELDS = (
     Field(
-        'Campaign objective', ('profile', 'objective'),
+        'Campaign objective', special='objective',
         comment='Describe the measurable improvement this campaign should pursue.'),
     Field(
         'Common agent command', ('explore', 'command'), _command,
@@ -391,12 +492,16 @@ class _RenderedRow:
     error: str = ''
 
 class ExploreInitWizard:
-    def __init__(self, store, profile, terminal=None, read_key=None, stream=None):
+    def __init__(
+        self, store, profile, terminal=None, read_key=None, stream=None,
+        backend=None,
+    ):
         self.store = store
         self.profile = profile
         self.term = terminal or Terminal()
         self.read_key = read_key or self.term.inkey
         self.stream = stream or sys.stdout
+        self.backend = backend
         self._rows = {}
         self._order = []
         self._window = []
@@ -417,7 +522,7 @@ class ExploreInitWizard:
             self.store.save(self.profile)
         index = self._initial_index(min(self.profile.cursor, len(FIELDS) - 1))
         try:
-            with self.term.cbreak():
+            with self.term.cbreak(), _paste_context(self.term):
                 self._write(_show_cursor(self.term))
                 self._write(
                     _dim(
@@ -471,8 +576,10 @@ class ExploreInitWizard:
                             break
                         index = following
                         self._focus(index)
-                    elif text.isprintable() and not name:
-                        self._insert(index, text)
+                    else:
+                        inserted = _input_text(key)
+                        if inserted:
+                            self._insert(index, inserted)
                 self.profile.metadata['complete'] = True
                 self.profile.metadata['cursor'] = len(FIELDS)
                 self.store.save(self.profile)
@@ -488,30 +595,70 @@ class ExploreInitWizard:
     def _prepare_generation(self):
         initialization = self.store.resolved_config.get(
             'explore', {}).get('initialization')
-        if not initialization:
+        if not initialization or not initialization.get('command'):
             return
-        generation = None
-        path = self.profile.path / 'generation.json'
-        if path.is_file():
-            try:
-                generation = json.loads(path.read_text(encoding='utf-8'))
-            except ValueError:
-                pass
-        retry = bool(generation and generation.get('status') in {
-            'pending', 'interrupted'})
-        if not self.new_profile and not retry:
-            return
+        generation = self.store.read_generation(self.profile)
         if self.new_profile:
-            self.store.save_generation(
-                self.profile, status='pending', attempts=0)
-            self.profile.metadata['objective'] = prompt_objective(
-                self.profile.objective, terminal=self.term,
+            generation = self.store.save_generation(
+                self.profile, status='draft', attempts=0,
+                objective_prompt=generation.get('objective_prompt'))
+
+        status = generation.get('status')
+        legacy_pending = (
+            status == 'pending' and
+            not generation.get('run_token') and
+            generation.get('backend_job_id') is None
+        )
+        editable = status in {'draft', 'ready', 'interrupted'} or legacy_pending
+        active = (
+            status in {'queued', 'running', 'pending'} and
+            bool(generation.get('run_token') or
+                 generation.get('backend_job_id') is not None)
+        )
+        from .initialization import (
+            InitializationInterrupted,
+            ProfileInitializationJob,
+        )
+        if active:
+            try:
+                generation = ProfileInitializationJob(
+                    self.store, self.profile, initialization, self.backend,
+                    objective_prompt=generation.get('objective_prompt'),
+                    stream=self.stream).reconcile_interrupted()
+            except InitializationInterrupted as error:
+                raise WizardAbort() from error
+            status = generation.get('status')
+            editable = status in {'draft', 'ready', 'interrupted'}
+            active = (
+                status in {'queued', 'running', 'pending'} and
+                bool(generation.get('run_token') or
+                     generation.get('backend_job_id') is not None)
+            )
+        if not editable and not active:
+            return
+
+        objective_prompt = generation.get('objective_prompt')
+        if editable:
+            objective_prompt = prompt_objective(
+                objective_prompt or self.profile.objective, terminal=self.term,
                 read_key=self.read_key, stream=self.stream)
-            self.store.save(self.profile)
-        from .initialization import InitializationInterrupted, ProfileInitializer
+            generation = self.store.save_generation(
+                self.profile,
+                expected_run_token=generation.get('run_token'),
+                status='ready',
+                objective_prompt=objective_prompt,
+                run_token=None,
+                backend_job_id=None,
+            )
+            if generation is None:
+                print(
+                    'Profile generation request changed while editing the brief.',
+                    file=self.stream)
+                raise WizardAbort()
         try:
-            ProfileInitializer(
-                self.store, self.profile, initialization,
+            ProfileInitializationJob(
+                self.store, self.profile, initialization, self.backend,
+                objective_prompt=objective_prompt,
                 stream=self.stream).run()
         except InitializationInterrupted as error:
             raise WizardAbort() from error
@@ -539,12 +686,12 @@ class ExploreInitWizard:
 
     def _new_row(self, index, response_line, committed):
         field = FIELDS[index]
-        current = field.current(self.profile.document)
+        current = self._field_current(index)
         selection = 0
         if field.kind == 'radio' and current in field.options:
             selection = field.options.index(current)
         buffer = (
-            field.display(self.profile.document)
+            self._field_display(index)
             if committed and field.kind != 'radio' else '')
         return _RenderedRow(
             response_line=response_line,
@@ -553,6 +700,18 @@ class ExploreInitWizard:
             cursor=len(buffer),
             selection=selection,
         )
+
+    def _field_current(self, index):
+        field = FIELDS[index]
+        if field.special == 'objective':
+            return self.profile.objective
+        return field.current(self.profile.document)
+
+    def _field_display(self, index):
+        field = FIELDS[index]
+        if field.special == 'objective':
+            return self.profile.objective
+        return field.display(self.profile.document)
 
     def _render_form(self, active_index):
         self._order = self._visible_indices()
@@ -626,21 +785,25 @@ class ExploreInitWizard:
     def _commit(self, index):
         field = FIELDS[index]
         row = self._rows[index]
-        raw = row.buffer or field.display(self.profile.document)
+        raw = row.buffer or self._field_display(index)
         try:
             if field.kind == 'radio':
                 field.commit(
                     self.profile.document, '', field.options[row.selection])
+            elif field.special == 'objective':
+                self.store.save_objective(self.profile, field.parser(raw))
             else:
                 field.commit(self.profile.document, raw)
-        except (TypeError, ValueError, json.JSONDecodeError) as exception:
+        except (
+            BackendError, TypeError, ValueError, json.JSONDecodeError,
+        ) as exception:
             row.error = str(exception)
             self._render_response(index, active=True)
             return False
         row.committed = True
         row.error = ''
         if field.kind != 'radio':
-            row.buffer = field.display(self.profile.document)
+            row.buffer = self._field_display(index)
             row.cursor = len(row.buffer)
         self.store.save(self.profile)
         if self._visible_indices() != self._order:
@@ -699,24 +862,29 @@ class ExploreInitWizard:
         if field.kind == 'radio':
             choices = []
             for offset, value in enumerate(field.options):
-                label = 'Enabled' if value is True else 'Disabled' if value is False else str(value)
+                label = (
+                    'Enabled' if value is True else
+                    'Disabled' if value is False else str(value))
                 if offset == row.selection:
                     rendered = _selected(self.term, '◉ {}'.format(label))
                 else:
                     rendered = '○ {}'.format(label)
                 choices.append(rendered)
             line = '  '.join(choices)
+            if row.error:
+                line += '  ' + _red(self.term, 'Error: ' + row.error)
         else:
-            placeholder = field.display(self.profile.document)
-            shown = row.buffer if row.buffer else _dim(self.term, placeholder)
-            line = shown
-        if row.error:
-            line += '  ' + _red(self.term, 'Error: ' + row.error)
+            placeholder = self._field_display(index)
         self._goto(row.response_line)
-        self._write(_clear_line(self.term) + RESPONSE_PREFIX + line)
+        if field.kind == 'radio':
+            self._write(_clear_line(self.term) + RESPONSE_PREFIX + line)
+        else:
+            line, column = _render_text_line(
+                self.term, row.buffer, row.cursor,
+                placeholder=placeholder, error=row.error)
+            self._write(line)
         if active and field.kind != 'radio':
-            self._write(_move_column(
-                self.term, row.cursor + len(RESPONSE_PREFIX)))
+            self._write(_move_column(self.term, column))
 
 
 def choose_profile(store, terminal=None, read_key=None, stream=None, create=True):
@@ -804,18 +972,16 @@ def prompt_objective(default='', terminal=None, read_key=None, stream=None):
     read_key = read_key or term.inkey
     stream = stream or sys.stdout
     value, error = '', ''
-    with term.cbreak():
+    with term.cbreak(), _paste_context(term):
         print(_show_cursor(term), end='', file=stream)
-        print(_prompt(term, 'Campaign objective'), file=stream)
+        print(_prompt(term, 'Profile generation brief'), file=stream)
         print(_comment(
-            term, 'Describe the measurable improvement this campaign should pursue.'),
+            term, 'Describe what the setup agent should configure for this repository.'),
             file=stream)
         while True:
-            shown = value or _dim(term, default)
-            message = _clear_line(term) + RESPONSE_PREFIX + shown
-            if error:
-                message += '  ' + _red(term, 'Error: ' + error)
-            print(message, end='', file=stream)
+            message, column = _render_text_line(
+                term, value, len(value), placeholder=default, error=error)
+            print(message + _move_column(term, column), end='', file=stream)
             stream.flush()
             key = _inline_key(read_key, stream)
             name, text = getattr(key, 'name', None), str(key)
@@ -828,8 +994,8 @@ def prompt_objective(default='', terminal=None, read_key=None, stream=None):
                     return result
                 except ValueError as exception:
                     error = str(exception)
-            elif text.isprintable() and not name:
-                value += text
+            else:
+                value += _input_text(key)
 
 
 def confirm_remove(name, summary, terminal=None, read_key=None, stream=None):

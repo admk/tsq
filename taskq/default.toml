@@ -49,7 +49,7 @@ env = {}
 response_repair_prompt = "response-repair.md"
 
 [explore.initialization]
-# Synchronous setup agent used only when creating a profile.
+# Interactive setup agent queued as a tq job when creating a profile.
 command = ["codex", "exec", "--ephemeral", "--sandbox", "workspace-write", "{}"]
 timeout = 600
 prompt = "initialization.md"
