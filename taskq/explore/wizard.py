@@ -12,6 +12,9 @@ from .agent import parse_command_template
 from .profiles import delete_value, get_value, set_value
 
 
+RESPONSE_PREFIX = '› '
+
+
 class WizardAbort(Exception):
     pass
 
@@ -82,8 +85,9 @@ def _red(term, value):
             _format(term, 'normal', '\x1b[0m'))
 
 
-def _italic(term, value):
-    return (_format(term, 'italic', '\x1b[3m') + value +
+def _comment(term, value):
+    return (_format(term, 'italic', '\x1b[3m') +
+            _format(term, 'dim', '\x1b[2m') + value +
             _format(term, 'normal', '\x1b[0m'))
 
 
@@ -330,8 +334,8 @@ class ExploreInitWizard:
                 self._write(
                     _dim(
                         self.term,
-                        'Up/Down move | Enter save | Left/Right select | '
-                        'Ctrl-C abort') + '\n' + _prompt(
+                        'Up/Down move | Tab next | Enter save | '
+                        'Left/Right select | Ctrl-C abort') + '\n' + _prompt(
                             self.term,
                             'tq explore init: {}'.format(self.profile.name))
                     + '\n')
@@ -350,7 +354,7 @@ class ExploreInitWizard:
                             index = previous
                             self._focus(index)
                         continue
-                    if name == 'KEY_DOWN':
+                    if name in {'KEY_DOWN', 'KEY_TAB'} or text == '\t':
                         following = self._next(index)
                         if following is not None:
                             index = following
@@ -565,7 +569,7 @@ class ExploreInitWizard:
         for comment in field.comment_lines:
             self._write('\n')
             self._cursor_line += 1
-            self._write(_clear_line(self.term) + _italic(self.term, comment))
+            self._write(_clear_line(self.term) + _comment(self.term, comment))
         self._write('\n')
         self._cursor_line = row.response_line
 
@@ -589,9 +593,10 @@ class ExploreInitWizard:
         if row.error:
             line += '  ' + _red(self.term, 'Error: ' + row.error)
         self._goto(row.response_line)
-        self._write(_clear_line(self.term) + line)
+        self._write(_clear_line(self.term) + RESPONSE_PREFIX + line)
         if active and field.kind != 'radio':
-            self._write(_move_column(self.term, row.cursor))
+            self._write(_move_column(
+                self.term, row.cursor + len(RESPONSE_PREFIX)))
 
 
 def choose_profile(store, terminal=None, read_key=None, stream=None, create=True):
@@ -607,7 +612,7 @@ def choose_profile(store, terminal=None, read_key=None, stream=None, create=True
     with term.cbreak():
         print(_show_cursor(term), end='', file=stream)
         print(_prompt(term, 'Choose exploration profile'), file=stream)
-        print(_italic(
+        print(_comment(
             term, 'Select an existing profile or create a new one.'),
             file=stream)
         while True:
@@ -618,7 +623,9 @@ def choose_profile(store, terminal=None, read_key=None, stream=None, create=True
                 else:
                     label = '○ {}'.format(value)
                 rendered.append(label)
-            print(_clear_line(term) + '  '.join(rendered), end='', file=stream)
+            print(
+                _clear_line(term) + RESPONSE_PREFIX + '  '.join(rendered),
+                end='', file=stream)
             stream.flush()
             key = _inline_key(read_key, stream)
             name, text = getattr(key, 'name', None), str(key)
@@ -646,12 +653,12 @@ def prompt_name(terminal=None, read_key=None, stream=None, validator=None):
     with term.cbreak():
         print(_show_cursor(term), end='', file=stream)
         print(_prompt(term, 'New exploration profile name'), file=stream)
-        print(_italic(
+        print(_comment(
             term, 'Used as the directory name under .tq/explore/.'),
             file=stream)
         while True:
             shown = value or _dim(term, 'default')
-            message = _clear_line(term) + shown
+            message = _clear_line(term) + RESPONSE_PREFIX + shown
             if error:
                 message += '  ' + _red(term, 'Error: ' + error)
             print(message, end='', file=stream)
@@ -682,7 +689,7 @@ def confirm_remove(name, summary, terminal=None, read_key=None, stream=None):
         print(_show_cursor(term), end='', file=stream)
         print(_prompt(term, 'Remove profile {}?'.format(name)), file=stream)
         for line in summary.splitlines():
-            print(_italic(term, line), file=stream)
+            print(_comment(term, line), file=stream)
         while True:
             rendered = []
             for index, value in enumerate(options):
@@ -691,7 +698,9 @@ def confirm_remove(name, summary, terminal=None, read_key=None, stream=None):
                 else:
                     label = '○ {}'.format(value)
                 rendered.append(label)
-            print(_clear_line(term) + '  '.join(rendered), end='', file=stream)
+            print(
+                _clear_line(term) + RESPONSE_PREFIX + '  '.join(rendered),
+                end='', file=stream)
             stream.flush()
             key = _inline_key(read_key, stream)
             key_name, text = getattr(key, 'name', None), str(key)

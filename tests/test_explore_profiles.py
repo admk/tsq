@@ -117,7 +117,8 @@ class FakeTerminal:
     yellow = '<ORANGE>'
     cyan = '<CYAN>'
     italic = '<ITALIC>'
-    dim = red = Style('')
+    dim = '<GREY>'
+    red = Style('')
 
     @staticmethod
     def fullscreen():
@@ -151,6 +152,7 @@ class NoStyleTerminal(FakeTerminal):
     yellow = ''
     cyan = ''
     italic = ''
+    dim = ''
 
 
 class Key(str):
@@ -173,7 +175,9 @@ def test_wizard_commits_each_enter_and_resumes_after_control_c(tmp_path):
     assert '<CLEAR>' not in output.getvalue()
     assert '<CURSOR>' in output.getvalue()
     assert '<BOLD><ORANGE>' in output.getvalue()
-    assert '<ITALIC>' in output.getvalue()
+    assert '<ITALIC><GREY>' in output.getvalue()
+    assert '› ' in output.getvalue()
+    assert '<X:2>' in output.getvalue()
     visible = [
         index for index, field in enumerate(FIELDS)
         if field.is_visible(profile.document)
@@ -210,7 +214,7 @@ def test_wizard_falls_back_to_ansi_styles_without_terminfo(tmp_path):
     assert result == 130
     assert '\x1b[?25h' in output.getvalue()
     assert '\x1b[1m\x1b[33m' in output.getvalue()
-    assert '\x1b[3m' in output.getvalue()
+    assert '\x1b[3m\x1b[2m' in output.getvalue()
 
     output = io.StringIO()
     confirm_remove(
@@ -240,6 +244,20 @@ def test_wizard_down_moves_without_committing(tmp_path):
     store = ExploreProfileStore(tmp_path, resolved_config())
     profile = store.create('profile')
     keys = iter(['x', Key('', 'KEY_DOWN'), '\x03'])
+
+    result = ExploreInitWizard(
+        store, profile, FakeTerminal(), lambda: next(keys), io.StringIO()).run()
+
+    assert result == 130
+    resumed = store.load('profile')
+    assert resumed.cursor == 1
+    assert resumed.objective == 'profile'
+
+
+def test_wizard_tab_moves_to_next_field_without_committing(tmp_path):
+    store = ExploreProfileStore(tmp_path, resolved_config())
+    profile = store.create('profile')
+    keys = iter(['x', '\t', '\x03'])
 
     result = ExploreInitWizard(
         store, profile, FakeTerminal(), lambda: next(keys), io.StringIO()).run()

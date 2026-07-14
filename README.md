@@ -129,10 +129,11 @@ tq explore remove broker-latency
 `tq explore init [NAME]` opens a keyboard-driven wizard for a reusable project
 profile. Without a name, existing profiles are shown as radios alongside a
 Create option. After profile selection, all onboarding fields are available in
-a height-bounded scrolling form. Text values show the resolved project default
-in dim grey; Enter commits and advances, Up and Down move between fields, and
-Ctrl-C aborts without rolling back committed items. Resume with
-`tq explore init NAME`.
+a height-bounded scrolling form. Each question includes an italic grey
+explanation, and response lines start with `› `. Text values show the resolved
+project default in dim grey; Enter commits and advances, Up and Down move
+between fields, Tab moves forward, and Ctrl-C aborts without rolling back
+committed items. Resume with `tq explore init NAME`.
 
 Profiles live under `.tq/explore/NAME/` with operational settings in
 `config.toml` and editable Markdown prompts in `prompts/`. Starting without a
