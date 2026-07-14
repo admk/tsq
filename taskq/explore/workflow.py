@@ -36,13 +36,6 @@ def _public_campaign(campaign):
     return campaign
 
 
-def _option(overrides, config, name, default=None, config_name=None):
-    value = overrides.get(name)
-    if value is not None:
-        return value
-    return config.get(config_name or name, default)
-
-
 def _required_text(config, name, phase):
     value = config.get(name)
     if not isinstance(value, str) or not value.strip():
@@ -89,9 +82,7 @@ class ExploreWorkflow:
             raise BackendError('no exploration campaigns found')
         return values[0]
 
-    def start(
-        self, objective, profile_name=None, profile_config=None, **overrides,
-    ):
+    def start(self, objective, profile_name=None, profile_config=None):
         if not objective or not objective.strip():
             raise BackendError('exploration objective cannot be empty')
         root, target_ref, target_head = repository(Path.cwd())
@@ -111,22 +102,21 @@ class ExploreWorkflow:
             for name in phase_names
         }
         try:
-            command_override = overrides.get('command')
             commands = {
-                name: parse_command_template(
-                    command_override if command_override is not None else
-                    phases[name].get('command'))
+                name: parse_command_template(phases[name].get('command'))
                 for name in (
                     'planning', 'optimization', 'inspection', 'merge')
             }
         except (TypeError, ValueError) as error:
             raise BackendError(str(error)) from error
         validation = phases['validation']
-        score = _option(overrides, validation, 'score')
-        score_direction = _option(overrides, validation, 'score_direction')
+        score = validation.get('score')
+        score_direction = validation.get('score_direction')
         if score and score_direction not in {'min', 'max'}:
-            raise BackendError('--score-direction min|max is required with --score')
-        identifier = campaign_id(profile_name or overrides.get('name') or objective)
+            raise BackendError(
+                'explore.validation.score_direction must be min|max when '
+                'explore.validation.score is set')
+        identifier = campaign_id(profile_name or objective)
         work_root = Path(self.backend.state_dir) / 'explore' / identifier
         mainline_worktree = work_root / 'mainline'
         control_cwd = work_root / 'control'
@@ -147,17 +137,16 @@ class ExploreWorkflow:
                 optimization = phases['optimization']
                 controller = phases['controller']
                 merge = phases['merge']
-                parallel = int(_option(overrides, optimization, 'parallel', 4))
+                parallel = int(optimization.get('parallel', 4))
                 max_adjustments = int(
-                    _option(overrides, optimization, 'max_adjustments', 3))
-                max_accepted_attempts = int(_option(
-                    overrides, merge, 'max_accepted_attempts', 6))
-                max_time = _duration(_option(
-                    overrides, controller, 'max_time', 28800, 'max_wall_time'))
-                max_files = int(_option(overrides, optimization, 'max_files', 5))
-                max_lines = int(_option(overrides, optimization, 'max_lines', 300))
-                min_improvement = float(_option(
-                    overrides, validation, 'min_improvement', 0))
+                    optimization.get('max_adjustments', 3))
+                max_accepted_attempts = int(
+                    merge.get('max_accepted_attempts', 6))
+                max_time = _duration(controller.get('max_wall_time', 28800))
+                max_files = int(optimization.get('max_files', 5))
+                max_lines = int(optimization.get('max_lines', 300))
+                min_improvement = float(
+                    validation.get('min_improvement', 0))
                 validation_gpus = int(validation.get('gpus', 0))
                 controller_interval = float(controller.get('interval', 5))
                 controller_timeout = float(controller.get('heartbeat_timeout', 30))
@@ -189,8 +178,7 @@ class ExploreWorkflow:
                 'deadline': time.time() + max_time if max_time else None,
             }
             protected = list(optimization.get('protected', []))
-            protected.extend(overrides.get('protect') or [])
-            checks = list(_option(overrides, validation, 'checks', []))
+            checks = list(validation.get('checks', []))
             for command_text in checks + ([score] if score else []):
                 for token in shlex.split(command_text):
                     path = (Path(root) / token).resolve()

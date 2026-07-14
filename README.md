@@ -128,15 +128,16 @@ tq explore remove broker-latency
 
 `tq explore init [NAME]` opens a keyboard-driven wizard for a reusable project
 profile. Without a name, existing profiles are shown as radios alongside a
-Create option. After profile selection, all onboarding fields are shown in an
-inline form. Text values show the resolved project default in dim grey; Enter
-commits and advances, Up and Down move between fields, and Ctrl-C aborts
-without rolling back committed items. Resume with `tq explore init NAME`.
+Create option. After profile selection, all onboarding fields are available in
+a height-bounded scrolling form. Text values show the resolved project default
+in dim grey; Enter commits and advances, Up and Down move between fields, and
+Ctrl-C aborts without rolling back committed items. Resume with
+`tq explore init NAME`.
 
 Profiles live under `.tq/explore/NAME/` with operational settings in
 `config.toml` and editable Markdown prompts in `prompts/`. Starting without a
-name opens the same profile picker. A profile stores its campaign objective;
-start-time flags such as `--parallel` remain available as one-run overrides.
+name opens the same profile picker. A profile stores its campaign objective
+and all campaign settings; edit them with `tq explore init NAME`.
 Removing a profile also removes its finished campaign history and memory, but
 is refused while any associated campaign is active.
 

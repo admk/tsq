@@ -82,6 +82,11 @@ def _red(term, value):
             _format(term, 'normal', '\x1b[0m'))
 
 
+def _italic(term, value):
+    return (_format(term, 'italic', '\x1b[3m') + value +
+            _format(term, 'normal', '\x1b[0m'))
+
+
 def _key(reader):
     try:
         return reader()
@@ -162,6 +167,13 @@ class Field:
     fallback: tuple = ()
     visible: object = None
     special: str = ''
+    comment: object = ''
+
+    @property
+    def comment_lines(self):
+        if isinstance(self.comment, str):
+            return tuple(self.comment.splitlines())
+        return tuple(self.comment)
 
     def is_visible(self, document):
         return self.visible(document) if self.visible else True
@@ -208,67 +220,91 @@ def _score_enabled(document):
 
 
 FIELDS = (
-    Field('Campaign objective', ('profile', 'objective')),
-    Field('Common agent command', ('explore', 'command'), _command),
-    Field('Common timeout', ('explore', 'timeout'), _duration),
+    Field(
+        'Campaign objective', ('profile', 'objective'),
+        comment='Describe the measurable improvement this campaign should pursue.'),
+    Field(
+        'Common agent command', ('explore', 'command'), _command,
+        comment='Default agent command; the {} argument receives the prompt.'),
+    Field(
+        'Common timeout', ('explore', 'timeout'), _duration,
+        comment='Default phase runtime limit unless that phase overrides it.'),
     Field('Planning command', ('explore', 'planning', 'command'), _command,
-          fallback=('explore', 'command')),
+          fallback=('explore', 'command'),
+          comment='Read-only agent command that proposes optimization directions.'),
     Field('Planning timeout', ('explore', 'planning', 'timeout'), _positive,
-          fallback=('explore', 'timeout')),
+          fallback=('explore', 'timeout'),
+          comment='Maximum runtime for one planning job.'),
     Field('Optimization command', ('explore', 'optimization', 'command'), _command,
-          fallback=('explore', 'command')),
+          fallback=('explore', 'command'),
+          comment='Workspace-write agent command that implements each attempt.'),
     Field('Optimization timeout', ('explore', 'optimization', 'timeout'), _positive,
-          fallback=('explore', 'timeout')),
+          fallback=('explore', 'timeout'),
+          comment='Maximum runtime for one optimization or adjustment job.'),
     Field('Parallel attempts', ('explore', 'optimization', 'parallel'),
-          lambda value: _integer(value, 1)),
+          lambda value: _integer(value, 1),
+          comment='Maximum optimization attempts allowed to run concurrently.'),
     Field('Maximum adjustments (0 is unlimited)',
-          ('explore', 'optimization', 'max_adjustments'), _integer),
+          ('explore', 'optimization', 'max_adjustments'), _integer,
+          comment='Reviewer-requested retries per attempt; 0 removes the cap.'),
     Field('Maximum changed files (0 is unlimited)',
-          ('explore', 'optimization', 'max_files'), _integer),
+          ('explore', 'optimization', 'max_files'), _integer,
+          comment='Reject candidates changing more files; 0 removes the cap.'),
     Field('Maximum changed lines (0 is unlimited)',
-          ('explore', 'optimization', 'max_lines'), _integer),
+          ('explore', 'optimization', 'max_lines'), _integer,
+          comment='Reject candidates exceeding added plus removed lines.'),
     Field('Protected paths (JSON array)',
-          ('explore', 'optimization', 'protected'), _string_list),
+          ('explore', 'optimization', 'protected'), _string_list,
+          comment='Repository-relative patterns that candidates must not modify.'),
     Field('Inspection command', ('explore', 'inspection', 'command'), _command,
-          fallback=('explore', 'command')),
+          fallback=('explore', 'command'),
+          comment='Agent command that independently reviews completed attempts.'),
     Field('Inspection timeout', ('explore', 'inspection', 'timeout'), _positive,
-          fallback=('explore', 'timeout')),
+          fallback=('explore', 'timeout'),
+          comment='Maximum runtime for one inspection job.'),
     Field('Validation timeout', ('explore', 'validation', 'timeout'), _positive,
-          fallback=('explore', 'timeout')),
-    Field('Validation GPUs', ('explore', 'validation', 'gpus'), _integer),
+          fallback=('explore', 'timeout'),
+          comment='Maximum runtime for each trusted validation job.'),
+    Field(
+        'Validation GPUs', ('explore', 'validation', 'gpus'), _integer,
+        comment='GPUs reserved for each baseline or candidate validation job.'),
     Field('Validation checks (JSON array)',
-          ('explore', 'validation', 'checks'), _string_list),
+          ('explore', 'validation', 'checks'), _string_list,
+          comment='Commands that must all exit successfully, as a JSON array.'),
     Field('Enable numeric scoring', kind='radio', options=(False, True),
-          special='score_enabled'),
+          special='score_enabled',
+          comment='Compare candidates with a numeric baseline as well as checks.'),
     Field('Score command', ('explore', 'validation', 'score'), _text,
-          visible=_score_enabled),
+          visible=_score_enabled,
+          comment='Its final non-empty output line must be the numeric score.'),
     Field('Score direction', ('explore', 'validation', 'score_direction'),
-          kind='radio', options=('min', 'max'), visible=_score_enabled),
+          kind='radio', options=('min', 'max'), visible=_score_enabled,
+          comment='Choose whether lower or higher scores are better.'),
     Field('Minimum score improvement',
           ('explore', 'validation', 'min_improvement'), _number,
-          visible=_score_enabled),
+          visible=_score_enabled,
+          comment='Required absolute score improvement over the baseline.'),
     Field('Merge command', ('explore', 'merge', 'command'), _command,
-          fallback=('explore', 'command')),
+          fallback=('explore', 'command'),
+          comment='Agent command used for merge review and conflict rebasing.'),
     Field('Merge timeout', ('explore', 'merge', 'timeout'), _positive,
-          fallback=('explore', 'timeout')),
+          fallback=('explore', 'timeout'),
+          comment='Maximum runtime for one merge review or rebase job.'),
     Field('Maximum accepted attempts (0 is unlimited)',
-          ('explore', 'merge', 'max_accepted_attempts'), _integer),
+          ('explore', 'merge', 'max_accepted_attempts'), _integer,
+          comment='Candidates integrated during this campaign; 0 removes the cap.'),
 )
 
 
 @dataclass
 class _RenderedRow:
     response_line: int
+    prompt_line: int = 0
     committed: bool = False
     buffer: str = ''
     cursor: int = 0
     selection: int = 0
     error: str = ''
-
-    @property
-    def prompt_line(self):
-        return self.response_line - 1
-
 
 class ExploreInitWizard:
     def __init__(self, store, profile, terminal=None, read_key=None, stream=None):
@@ -279,6 +315,7 @@ class ExploreInitWizard:
         self.stream = stream or sys.stdout
         self._rows = {}
         self._order = []
+        self._window = []
         self._cursor_line = 0
 
     def run(self, restart_complete=True):
@@ -311,13 +348,13 @@ class ExploreInitWizard:
                         previous = self._previous(index)
                         if previous is not None:
                             index = previous
-                            self._set_cursor(index)
+                            self._focus(index)
                         continue
                     if name == 'KEY_DOWN':
                         following = self._next(index)
                         if following is not None:
                             index = following
-                            self._set_cursor(index)
+                            self._focus(index)
                         continue
                     if name == 'KEY_LEFT':
                         self._move_left(index)
@@ -341,7 +378,7 @@ class ExploreInitWizard:
                         if following is None:
                             break
                         index = following
-                        self._set_cursor(index)
+                        self._focus(index)
                     elif text.isprintable() and not name:
                         self._insert(index, text)
                 self.profile.metadata['complete'] = True
@@ -382,7 +419,9 @@ class ExploreInitWizard:
         selection = 0
         if field.kind == 'radio' and current in field.options:
             selection = field.options.index(current)
-        buffer = field.display(self.profile.document) if committed else ''
+        buffer = (
+            field.display(self.profile.document)
+            if committed and field.kind != 'radio' else '')
         return _RenderedRow(
             response_line=response_line,
             committed=committed,
@@ -393,37 +432,54 @@ class ExploreInitWizard:
 
     def _render_form(self, active_index):
         self._order = self._visible_indices()
-        self._rows = {}
-        for index in self._order:
-            row = self._new_row(
-                index, self._cursor_line + 1, index < active_index)
-            self._rows[index] = row
+        self._rows = {
+            index: self._new_row(index, 0, index < active_index)
+            for index in self._order
+        }
+        self._render_window(active_index)
+
+    def _rebuild_form(self, active_index):
+        old_rows = self._rows
+        self._order = self._visible_indices()
+        self._rows = {
+            index: old_rows.get(index) or self._new_row(
+                index, 0, index < active_index)
+            for index in self._order
+        }
+        self._render_window(active_index)
+
+    def _window_capacity(self):
+        height = int(getattr(self.term, 'height', 24) or 24)
+        row_height = max(
+            2 + len(FIELDS[index].comment_lines)
+            for index in self._order)
+        return max(1, min(
+            len(self._order), (height - 3) // row_height))
+
+    def _render_window(self, active_index):
+        capacity = self._window_capacity()
+        position = self._order.index(active_index)
+        start = max(0, min(
+            position - capacity // 2, len(self._order) - capacity))
+        self._window = self._order[start:start + capacity]
+        self._goto(2)
+        self._write(_clear_eos(self.term))
+        self._cursor_line = 2
+        for index in self._window:
+            row = self._rows[index]
+            row.prompt_line = self._cursor_line
+            row.response_line = (
+                row.prompt_line + 1 + len(FIELDS[index].comment_lines))
             self._render_prompt(index)
             self._render_response(index)
             self._write('\n')
             self._cursor_line = row.response_line + 1
         self._goto(self._rows[active_index].response_line)
 
-    def _rebuild_form(self, active_index):
-        old_rows = self._rows
-        self._goto(2)
-        self._write(_clear_eos(self.term))
-        self._cursor_line = 2
-        self._order = self._visible_indices()
-        self._rows = {}
-        for index in self._order:
-            row = old_rows.get(index)
-            if row is None:
-                row = self._new_row(
-                    index, self._cursor_line + 1, index < active_index)
-            else:
-                row.response_line = self._cursor_line + 1
-            self._rows[index] = row
-            self._render_prompt(index)
-            self._render_response(index)
-            self._write('\n')
-            self._cursor_line = row.response_line + 1
-        self._goto(self._rows[active_index].response_line)
+    def _focus(self, index):
+        if index not in self._window:
+            self._render_window(index)
+        self._set_cursor(index)
 
     def _set_cursor(self, index):
         self.profile.metadata['cursor'] = index
@@ -503,8 +559,13 @@ class ExploreInitWizard:
 
     def _render_prompt(self, index):
         row = self._rows[index]
+        field = FIELDS[index]
         self._goto(row.prompt_line)
-        self._write(_clear_line(self.term) + _prompt(self.term, FIELDS[index].label))
+        self._write(_clear_line(self.term) + _prompt(self.term, field.label))
+        for comment in field.comment_lines:
+            self._write('\n')
+            self._cursor_line += 1
+            self._write(_clear_line(self.term) + _italic(self.term, comment))
         self._write('\n')
         self._cursor_line = row.response_line
 
@@ -546,6 +607,9 @@ def choose_profile(store, terminal=None, read_key=None, stream=None, create=True
     with term.cbreak():
         print(_show_cursor(term), end='', file=stream)
         print(_prompt(term, 'Choose exploration profile'), file=stream)
+        print(_italic(
+            term, 'Select an existing profile or create a new one.'),
+            file=stream)
         while True:
             rendered = []
             for index, value in enumerate(options):
@@ -582,6 +646,9 @@ def prompt_name(terminal=None, read_key=None, stream=None, validator=None):
     with term.cbreak():
         print(_show_cursor(term), end='', file=stream)
         print(_prompt(term, 'New exploration profile name'), file=stream)
+        print(_italic(
+            term, 'Used as the directory name under .tq/explore/.'),
+            file=stream)
         while True:
             shown = value or _dim(term, 'default')
             message = _clear_line(term) + shown
@@ -614,7 +681,8 @@ def confirm_remove(name, summary, terminal=None, read_key=None, stream=None):
     with term.cbreak():
         print(_show_cursor(term), end='', file=stream)
         print(_prompt(term, 'Remove profile {}?'.format(name)), file=stream)
-        print(summary, file=stream)
+        for line in summary.splitlines():
+            print(_italic(term, line), file=stream)
         while True:
             rendered = []
             for index, value in enumerate(options):

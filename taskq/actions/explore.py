@@ -34,18 +34,6 @@ class ExploreAction(ActionBase):
             'help': 'Attempt ID for inspect.',
         },
         ('--yes',): {'action': 'store_true'},
-        ('--cmd',): {'dest': 'command', 'default': None},
-        ('--check',): {'action': 'append', 'dest': 'checks', 'default': None},
-        ('--score',): {'default': None},
-        ('--score-direction',): {'choices': ['min', 'max'], 'default': None},
-        ('--min-improvement',): {'type': float, 'default': None},
-        ('--protect',): {'action': 'append', 'default': None},
-        ('--parallel',): {'type': int, 'default': None},
-        ('--max-adjustments',): {'type': int, 'default': None},
-        ('--max-accepted-attempts',): {'type': int, 'default': None},
-        ('--max-time',): {'default': None},
-        ('--max-files',): {'type': int, 'default': None},
-        ('--max-lines',): {'type': int, 'default': None},
         ('--json',): {'action': 'store_true', 'dest': 'as_json'},
     }
 
@@ -134,17 +122,7 @@ class ExploreAction(ActionBase):
             profile = store.load(name)
             config = store.effective_config(profile)
             campaign = workflow.start(
-                profile.objective, profile_name=name, profile_config=config,
-                command=args.command,
-                checks=args.checks, score=args.score,
-                score_direction=args.score_direction,
-                min_improvement=args.min_improvement,
-                protect=args.protect, parallel=args.parallel,
-                max_adjustments=args.max_adjustments,
-                max_accepted_attempts=args.max_accepted_attempts,
-                max_time=args.max_time,
-                max_files=args.max_files, max_lines=args.max_lines,
-            )
+                profile.objective, profile_name=name, profile_config=config)
             print('Started exploration {} on {}.'.format(
                 campaign['id'], campaign['target_ref']))
             return

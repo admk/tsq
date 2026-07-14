@@ -107,6 +107,7 @@ class Style(str):
 
 
 class FakeTerminal:
+    height = 12
     home = '<HOME>'
     clear = '<CLEAR>'
     clear_eol = ''
@@ -115,6 +116,7 @@ class FakeTerminal:
     bold = Style('<BOLD>')
     yellow = '<ORANGE>'
     cyan = '<CYAN>'
+    italic = '<ITALIC>'
     dim = red = Style('')
 
     @staticmethod
@@ -148,6 +150,7 @@ class NoStyleTerminal(FakeTerminal):
     bold = Style('')
     yellow = ''
     cyan = ''
+    italic = ''
 
 
 class Key(str):
@@ -170,18 +173,19 @@ def test_wizard_commits_each_enter_and_resumes_after_control_c(tmp_path):
     assert '<CLEAR>' not in output.getvalue()
     assert '<CURSOR>' in output.getvalue()
     assert '<BOLD><ORANGE>' in output.getvalue()
-    assert '<BOLD><CYAN>' in output.getvalue()
-    assert '◉' in output.getvalue()
-    assert '○' in output.getvalue()
+    assert '<ITALIC>' in output.getvalue()
     visible = [
         index for index, field in enumerate(FIELDS)
         if field.is_visible(profile.document)
     ]
     assert wizard._order == visible
     assert set(wizard._rows) == set(visible)
+    assert len(wizard._window) < len(wizard._order)
     assert all(
-        row.response_line == row.prompt_line + 1
-        for row in wizard._rows.values())
+        wizard._rows[index].response_line ==
+        wizard._rows[index].prompt_line + 1 +
+        len(FIELDS[index].comment_lines)
+        for index in wizard._window)
     resumed = store.load('profile')
     assert resumed.cursor == 1
     assert resumed.complete is False
@@ -206,6 +210,11 @@ def test_wizard_falls_back_to_ansi_styles_without_terminfo(tmp_path):
     assert result == 130
     assert '\x1b[?25h' in output.getvalue()
     assert '\x1b[1m\x1b[33m' in output.getvalue()
+    assert '\x1b[3m' in output.getvalue()
+
+    output = io.StringIO()
+    confirm_remove(
+        'profile', 'summary', NoStyleTerminal(), lambda: '\n', output)
     assert '\x1b[1m\x1b[36m' in output.getvalue()
 
 
@@ -223,7 +232,8 @@ def test_wizard_up_moves_to_previous_item(tmp_path):
 
     assert result == 130
     assert store.load('profile').cursor == 0
-    assert '<UP:2>' in output.getvalue()
+    assert '<UP:{}>'.format(
+        2 + len(FIELDS[0].comment_lines)) in output.getvalue()
 
 
 def test_wizard_down_moves_without_committing(tmp_path):
@@ -240,13 +250,50 @@ def test_wizard_down_moves_without_committing(tmp_path):
     assert resumed.objective == 'profile'
 
 
+def test_wizard_scrolls_when_navigation_leaves_visible_window(tmp_path):
+    store = ExploreProfileStore(tmp_path, resolved_config())
+    profile = store.create('profile')
+    keys = iter([Key('', 'KEY_DOWN')] * 5 + ['\x03'])
+    wizard = ExploreInitWizard(
+        store, profile, FakeTerminal(), lambda: next(keys), io.StringIO())
+
+    assert wizard.run() == 130
+    assert store.load('profile').cursor == 5
+    assert 5 in wizard._window
+    assert max(
+        wizard._rows[index].response_line
+        for index in wizard._window) < FakeTerminal.height
+
+
+def test_wizard_resumes_after_committed_radio_field(tmp_path):
+    store = ExploreProfileStore(tmp_path, resolved_config())
+    profile = store.create('profile')
+    profile.metadata['cursor'] = len(FIELDS) - 1
+    store.save(profile)
+
+    result = ExploreInitWizard(
+        store, profile, FakeTerminal(), lambda: '\x03', io.StringIO()).run(
+            restart_complete=False)
+
+    assert result == 130
+    assert store.load('profile').cursor == len(FIELDS) - 1
+
+
 def test_wizard_does_not_onboard_controller_options():
     assert not any(field.path[:2] == ('explore', 'controller') for field in FIELDS)
 
 
+def test_every_wizard_field_has_explanatory_comment():
+    assert all(field.comment_lines for field in FIELDS)
+
+
 def test_remove_confirmation_uses_left_right_radio():
     keys = iter([Key('', 'KEY_RIGHT'), Key('\n', 'KEY_ENTER')])
+    output = io.StringIO()
 
     assert confirm_remove(
         'profile', 'summary', FakeTerminal(), lambda: next(keys),
-        io.StringIO()) is True
+        output) is True
+    assert '<BOLD><CYAN>' in output.getvalue()
+    assert '◉' in output.getvalue()
+    assert '○' in output.getvalue()
