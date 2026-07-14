@@ -50,6 +50,38 @@ Your previous response was invalid: $error.
 Return the required TASKQ_JSON line and no trailing text.
 '''
 
+[explore.initialization]
+# Synchronous setup agent used only when creating a profile.
+command = ["codex", "exec", "--ephemeral", "--sandbox", "workspace-write", "{}"]
+timeout = 600
+prompt = '''
+Configure a new taskq exploration profile for this repository.
+
+Campaign objective:
+$objective
+
+The scaffold profile is at $profile_path. Inspect the committed repository and
+edit only wizard-managed values in its config.toml. Do not change [profile],
+controller settings, prompt file references, or files under prompts/. You may
+add evaluator support files only under $profile_path/assets/.
+
+Choose safe argv commands, timeouts, parallelism, change limits, protected
+paths, and validation checks suited to this project. Prefer existing checks and
+benchmarks. Add a numeric score only when the objective has a meaningful,
+deterministic metric. Do not execute generated code or expensive validation.
+'''
+repair_prompt = '''
+Repair the proposed taskq exploration profile for this objective:
+$objective
+
+Validation error:
+$error
+
+The profile is at $profile_path. Correct only wizard-managed config values and
+files under assets/. Preserve profile metadata, prompt references, controller
+settings, and every file under prompts/. Do not execute evaluator code.
+'''
+
 # Generate distinct optimization directions without modifying the repository.
 [explore.planning]
 command = ["codex", "exec", "--ephemeral", "--sandbox", "read-only", "{}"]

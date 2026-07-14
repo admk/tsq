@@ -29,6 +29,8 @@ PROMPTS = (
     (('merge',), 'review_prompt', 'merge-review.md'),
     (('merge',), 'rebase_prompt', 'rebase.md'),
 )
+ASSET_MAX_FILES = 64
+ASSET_MAX_BYTES = 2 * 1024 * 1024
 
 
 def _plain(value):
@@ -136,6 +138,8 @@ class ExploreProfileStore:
             return profile
         path.mkdir(parents=True, exist_ok=True)
         explore = _plain(self.resolved_config.get('explore', {}))
+        # Initialization is a local bootstrap facility, not campaign config.
+        explore.pop('initialization', None)
         phases = resolve_phases(explore)
         prompt_dir = path / 'prompts'
         prompt_dir.mkdir(exist_ok=True)
@@ -227,6 +231,22 @@ class ExploreProfileStore:
             target[key] = self._read_prompt(profile.path, relative)
         dict_merge(config, {'explore': profile_explore})
         return config
+
+    def generation_path(self, profile):
+        return profile.path / 'generation.json'
+
+    def save_generation(self, profile, **values):
+        current = {}
+        path = self.generation_path(profile)
+        if path.is_file():
+            try:
+                current = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                current = {}
+        current.update(values)
+        self._atomic_text(path, json.dumps(
+            current, indent=2, sort_keys=True) + '\n')
+        return current
 
     def remove(self, name):
         path = self.profile_dir(name)

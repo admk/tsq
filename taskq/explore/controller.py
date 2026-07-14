@@ -39,6 +39,7 @@ from .git import (
 from .state import ExploreState
 from .validation import MARKER as VALIDATION_MARKER
 from .validation import eligible
+from .assets import copy_assets, inventory
 
 
 TERMINAL = {'success', 'failed', 'killed', 'interrupted'}
@@ -990,6 +991,7 @@ class ExploreController:
                 dirty = bool(git(
                     cwd, 'status', '--porcelain', '--untracked-files=normal'))
                 clean = clean and current == expected and not dirty
+                clean = clean and self._validation_assets_clean(cwd)
             return clean
         cwd = metadata.get('validation_cwd')
         expected = metadata.get('expected_head')
@@ -997,7 +999,8 @@ class ExploreController:
             return True
         current = git(cwd, 'rev-parse', 'HEAD')
         dirty = bool(git(cwd, 'status', '--porcelain', '--untracked-files=normal'))
-        return current == expected and not dirty
+        return (current == expected and not dirty and
+                self._validation_assets_clean(cwd))
 
     def _cleanup_event_worktrees(self, job):
         metadata = job.get('metadata') or {}
@@ -1021,7 +1024,21 @@ class ExploreController:
             label, time.time_ns())
         git_ref_utils.create_worktree(
             self.config['repo_root'], head, path)
+        manifest = self.config.get('asset_manifest') or []
+        if manifest:
+            copy_assets(
+                self.config['asset_snapshot'], path / '.tq' / 'explore-assets',
+                expected=manifest)
         return path
+
+    def _validation_assets_clean(self, cwd):
+        expected = self.config.get('asset_manifest') or []
+        if not expected:
+            return True
+        try:
+            return inventory(Path(cwd) / '.tq' / 'explore-assets') == expected
+        except BackendError:
+            return False
 
     def _remove_validation_worktree(self, path):
         git_ref_utils.remove_worktree({

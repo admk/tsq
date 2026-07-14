@@ -12,6 +12,7 @@ from .agent import parse_command_template, render_prompt
 from .controller import ExploreController
 from .git import campaign_id, diff, ensure_local_exclude, repository, require_clean
 from .state import ExploreState
+from .assets import copy_assets, inventory
 
 
 def _plain(value):
@@ -92,14 +93,14 @@ class ExploreWorkflow:
         explore = _plain(source_config.get('explore', {}))
         phase_names = (
             'planning', 'optimization', 'inspection', 'validation',
-            'merge', 'controller')
+            'merge', 'controller', 'initialization')
         common = {
             key: value for key, value in explore.items()
             if key not in phase_names
         }
         phases = {
             name: dict(common, **dict(explore.get(name) or {}))
-            for name in phase_names
+            for name in phase_names if name != 'initialization'
         }
         try:
             commands = {
@@ -178,6 +179,8 @@ class ExploreWorkflow:
                 'deadline': time.time() + max_time if max_time else None,
             }
             protected = list(optimization.get('protected', []))
+            if '.tq/**' not in protected:
+                protected.append('.tq/**')
             checks = list(validation.get('checks', []))
             for command_text in checks + ([score] if score else []):
                 for token in shlex.split(command_text):
@@ -188,6 +191,13 @@ class ExploreWorkflow:
                         continue
                     if path.is_file():
                         protected.append(str(relative))
+            asset_source = (
+                Path(root) / '.tq' / 'explore' / profile_name / 'assets'
+                if profile_name else None)
+            asset_manifest = inventory(asset_source) if asset_source else []
+            asset_snapshot = work_root / 'assets-snapshot'
+            if asset_manifest:
+                copy_assets(asset_source, asset_snapshot, asset_manifest)
             campaign_config = {
                 'repo_root': root,
                 'work_root': str(work_root),
@@ -197,6 +207,8 @@ class ExploreWorkflow:
                 'heartbeat_file': str(heartbeat_file),
                 'backend_config': _plain(self.backend.config),
                 'profile_name': profile_name,
+                'asset_snapshot': str(asset_snapshot),
+                'asset_manifest': asset_manifest,
                 'phases': {
                     'planning': {
                         'command': commands['planning'],

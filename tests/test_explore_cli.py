@@ -201,6 +201,22 @@ def test_explore_start_uses_profile_config(
     assert capsys.readouterr().out == 'Started exploration campaign-1 on main.\n'
 
 
+def test_campaign_snapshots_profile_assets(workflow_env, repo):
+    workflow, _backend, _reconciled = workflow_env
+    assets = repo / '.tq' / 'explore' / 'latency' / 'assets'
+    assets.mkdir(parents=True)
+    (assets / 'score.py').write_text('print(1)\n', encoding='utf-8')
+
+    campaign = workflow.start('reduce latency', profile_name='latency')
+
+    manifest = campaign['config']['asset_manifest']
+    assert [item['path'] for item in manifest] == ['score.py']
+    snapshot = Path(campaign['config']['asset_snapshot'])
+    assert (snapshot / 'score.py').read_text(encoding='utf-8') == 'print(1)\n'
+    assert '.tq/**' in campaign['config']['phases']['optimization'][
+        'protected_paths']
+
+
 def test_explore_init_scaffolds_named_profile(
     monkeypatch, tmp_path, capsys,
 ):

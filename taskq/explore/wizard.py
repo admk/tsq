@@ -300,6 +300,72 @@ FIELDS = (
 )
 
 
+def validate_generated_document(scaffold, generated):
+    """Validate and return wizard-managed values from an agent-edited profile."""
+    # Remove every field the wizard owns; everything else must be byte-for-byte
+    # equivalent at the data-model level (including metadata and prompt refs).
+    baseline = json.loads(json.dumps(scaffold))
+    candidate = json.loads(json.dumps(generated))
+    managed = [field.path for field in FIELDS if field.path[:1] == ('explore',)]
+    managed.extend((
+        ('explore', 'validation', 'score'),
+        ('explore', 'validation', 'score_direction'),
+    ))
+    for path in managed:
+        delete_value(baseline, path)
+        delete_value(candidate, path)
+    if baseline != candidate:
+        raise ValueError(
+            'generated profile changed unknown or non-wizard configuration')
+
+    for field in FIELDS:
+        if field.special:
+            continue
+        if field.path[:1] != ('explore',) or not field.is_visible(generated):
+            continue
+        value = field.current(generated)
+        if field.kind == 'radio':
+            if value not in field.options:
+                raise ValueError('{} must be one of {}'.format(
+                    field.label, ', '.join(map(str, field.options))))
+            continue
+        raw = field.display(generated)
+        if value is None:
+            raise ValueError('{} is missing'.format(field.label))
+        field.parser(raw)
+    score = get_value(generated, ('explore', 'validation', 'score'))
+    checks = get_value(generated, ('explore', 'validation', 'checks'), [])
+    for command in list(checks) + ([score] if score else []):
+        try:
+            argv = shlex.split(command)
+        except (TypeError, ValueError) as error:
+            raise ValueError('invalid validation command: {}'.format(error)) from error
+        if not argv:
+            raise ValueError('validation commands cannot be empty')
+    direction = get_value(
+        generated, ('explore', 'validation', 'score_direction'))
+    if bool(score) != (direction in {'min', 'max'}):
+        raise ValueError(
+            'numeric score and score_direction must be configured together')
+    return generated
+
+
+def import_generated_values(target, generated):
+    """Copy only values represented by the wizard schema."""
+    paths = [field.path for field in FIELDS if field.path[:1] == ('explore',)]
+    paths.extend((
+        ('explore', 'validation', 'score'),
+        ('explore', 'validation', 'score_direction'),
+    ))
+    for path in paths:
+        marker = object()
+        value = get_value(generated, path, marker)
+        if value is marker:
+            delete_value(target, path)
+        else:
+            set_value(target, path, json.loads(json.dumps(value)))
+
+
 @dataclass
 class _RenderedRow:
     response_line: int
@@ -321,8 +387,16 @@ class ExploreInitWizard:
         self._order = []
         self._window = []
         self._cursor_line = 0
+        self.new_profile = False
 
     def run(self, restart_complete=True):
+        try:
+            self._prepare_generation()
+        except WizardAbort:
+            print(
+                'Initialization paused. Resume with: tq explore init {}'.format(
+                    self.profile.name), file=self.stream)
+            return 130
         if restart_complete and self.profile.complete:
             self.profile.metadata['complete'] = False
             self.profile.metadata['cursor'] = 0
@@ -396,6 +470,38 @@ class ExploreInitWizard:
                     self.profile.name), file=self.stream)
             return 130
         return 0
+
+    def _prepare_generation(self):
+        initialization = self.store.resolved_config.get(
+            'explore', {}).get('initialization')
+        if not initialization:
+            return
+        generation = None
+        path = self.profile.path / 'generation.json'
+        if path.is_file():
+            try:
+                generation = json.loads(path.read_text(encoding='utf-8'))
+            except ValueError:
+                pass
+        retry = bool(generation and generation.get('status') in {
+            'pending', 'interrupted'})
+        if not self.new_profile and not retry:
+            return
+        if self.new_profile:
+            self.store.save_generation(
+                self.profile, status='pending', attempts=0)
+            self.profile.metadata['objective'] = prompt_objective(
+                self.profile.objective, terminal=self.term,
+                read_key=self.read_key, stream=self.stream)
+            self.store.save(self.profile)
+        from .initialization import InitializationInterrupted, ProfileInitializer
+        try:
+            ProfileInitializer(
+                self.store, self.profile, initialization,
+                stream=self.stream).run()
+        except InitializationInterrupted as error:
+            raise WizardAbort() from error
+        self.profile = self.store.load(self.profile.name)
 
     def _write(self, value):
         print(value, end='', file=self.stream)
@@ -674,6 +780,39 @@ def prompt_name(terminal=None, read_key=None, stream=None, validator=None):
                     print(file=stream)
                     return result
                 except (TypeError, ValueError, BackendError) as exception:
+                    error = str(exception)
+            elif text.isprintable() and not name:
+                value += text
+
+
+def prompt_objective(default='', terminal=None, read_key=None, stream=None):
+    term = terminal or Terminal()
+    read_key = read_key or term.inkey
+    stream = stream or sys.stdout
+    value, error = '', ''
+    with term.cbreak():
+        print(_show_cursor(term), end='', file=stream)
+        print(_prompt(term, 'Campaign objective'), file=stream)
+        print(_comment(
+            term, 'Describe the measurable improvement this campaign should pursue.'),
+            file=stream)
+        while True:
+            shown = value or _dim(term, default)
+            message = _clear_line(term) + RESPONSE_PREFIX + shown
+            if error:
+                message += '  ' + _red(term, 'Error: ' + error)
+            print(message, end='', file=stream)
+            stream.flush()
+            key = _inline_key(read_key, stream)
+            name, text = getattr(key, 'name', None), str(key)
+            if name in {'KEY_BACKSPACE', 'KEY_DELETE_BACKWARD'} or text == '\x7f':
+                value = value[:-1]
+            elif name == 'KEY_ENTER' or text in {'\n', '\r'}:
+                try:
+                    result = _text(value or default)
+                    print(file=stream)
+                    return result
+                except ValueError as exception:
                     error = str(exception)
             elif text.isprintable() and not name:
                 value += text

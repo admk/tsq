@@ -1,11 +1,14 @@
 import io
+import copy
 from contextlib import nullcontext
 
 import pytest
 
 from taskq.backends.base import BackendError
 from taskq.explore.profiles import ExploreProfileStore
-from taskq.explore.wizard import FIELDS, ExploreInitWizard, confirm_remove
+from taskq.explore.wizard import (
+    FIELDS, ExploreInitWizard, confirm_remove, validate_generated_document,
+)
 
 
 def resolved_config():
@@ -99,6 +102,23 @@ def test_profile_rejects_prompt_traversal(tmp_path):
 
     with pytest.raises(BackendError, match='inside the profile'):
         store.effective_config(store.load('profile'))
+
+
+def test_generated_profile_uses_wizard_validation_and_rejects_unknown_keys(
+    tmp_path,
+):
+    store = ExploreProfileStore(tmp_path, resolved_config())
+    profile = store.create('profile')
+    generated = copy.deepcopy(profile.document)
+    generated['explore']['timeout'] = 'not-a-duration'
+
+    with pytest.raises(ValueError):
+        validate_generated_document(profile.document, generated)
+
+    generated = copy.deepcopy(profile.document)
+    generated['explore']['unknown_agent_option'] = True
+    with pytest.raises(ValueError, match='unknown or non-wizard'):
+        validate_generated_document(profile.document, generated)
 
 
 class Style(str):

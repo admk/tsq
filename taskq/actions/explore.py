@@ -58,8 +58,11 @@ class ExploreAction(ActionBase):
             name = self._profile_name(store, args.value)
             if name is None:
                 return 130
+            existed = name in store.list()
             profile = store.create(name)
-            result = ExploreInitWizard(store, profile).run(restart_complete=True)
+            wizard = ExploreInitWizard(store, profile)
+            wizard.new_profile = not existed
+            result = wizard.run(restart_complete=True)
             if not result:
                 print('Initialized exploration profile {}.'.format(name))
                 print('Start with: tq explore start {}'.format(name))
