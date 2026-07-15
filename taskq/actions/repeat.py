@@ -62,15 +62,13 @@ def dry_command_argv(command):
 
 
 def dry_add_command(
-    command, gpus, slots, depends_on=None, ref=None, merge=False, branch=None,
+    command, gpus, slots, depends_on=None, ref=None, merge_branch=None,
 ):
     argv = [TOOL_NAME, 'add']
     if ref:
         argv += ['--ref', str(ref)]
-    if merge:
-        argv.append('--merge')
-    if branch is not None:
-        argv += ['--branch', str(branch)]
+    if merge_branch is not None:
+        argv += ['--merge', str(merge_branch)]
     if include_gpus(gpus):
         argv += ['-G', str(gpus)]
     argv += ['-N', str(slots)]
@@ -80,8 +78,8 @@ def dry_add_command(
     return escape_command_display(shlex.join(argv))
 
 
-def resolve_backend_merge_spec(backend, branch=None, cwd=None):
-    """Resolve and normalize a backend-specific merge request for storage."""
+def validate_backend_merge_support(backend):
+    """Return the backend merge resolver after validating support."""
     if not getattr(backend, 'supports_git_merge', False):
         raise CLIError(
             f"backend {backend.name!r} does not support --merge")
@@ -90,7 +88,18 @@ def resolve_backend_merge_spec(backend, branch=None, cwd=None):
         raise CLIError(
             f"backend {backend.name!r} advertises --merge support but cannot "
             'resolve merge targets')
-    spec = resolver(branch) if cwd is None else resolver(branch, cwd=cwd)
+    return resolver
+
+
+def resolve_backend_merge_spec(backend, branch, cwd=None, create=True):
+    """Resolve and normalize a backend-specific merge request for storage."""
+    resolver = validate_backend_merge_support(backend)
+    kwargs = {}
+    if cwd is not None:
+        kwargs['cwd'] = cwd
+    if not create:
+        kwargs['create'] = False
+    spec = resolver(branch, **kwargs)
     try:
         return json.loads(json.dumps(spec, allow_nan=False))
     except (TypeError, ValueError) as e:
@@ -102,8 +111,8 @@ def resolve_backend_merge_spec(backend, branch=None, cwd=None):
 def merge_replay_options(info):
     merge = info.get('merge')
     if not isinstance(merge, dict) or not merge.get('requested'):
-        return False, None
-    return True, merge.get('target_branch')
+        return None
+    return merge.get('target_branch')
 
 
 def merge_replay_cwd(info):

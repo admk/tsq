@@ -254,10 +254,11 @@ class TmuxBackend(BackendBase):
     def resolve_git_ref(self, ref):
         return git_ref_utils.resolve_ref(ref)
 
-    def resolve_merge_spec(self, branch=None, cwd=None):
+    def resolve_merge_spec(self, branch=None, cwd=None, create=True):
         from ...merge.workflow import build_merge_spec
 
-        return build_merge_spec(self.config, cwd or os.getcwd(), branch)
+        return build_merge_spec(
+            self.config, cwd or os.getcwd(), branch, create=create)
 
     def _register_merge(self, meta):
         from ...merge.workflow import register_merge_job

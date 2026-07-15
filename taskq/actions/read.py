@@ -225,15 +225,13 @@ class CommandsAction(ReadActionBase):
         outputs = []
         for i in info:
             if args.add_command:
-                merge, branch = merge_replay_options(i)
                 command = dry_add_command(
                     i['command'],
                     i.get('gpus_required', 0),
                     i.get('slots_required', 1),
                     i.get('depends_on'),
                     i.get('git_commit') or i.get('git_ref'),
-                    merge,
-                    branch,
+                    merge_replay_options(i),
                 )
             else:
                 command = escape_command_display(i['command'])

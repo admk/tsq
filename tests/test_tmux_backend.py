@@ -475,7 +475,7 @@ def test_tmux_resolve_merge_spec_accepts_original_repo_context(
 ):
     repo = tmp_path / 'repo'
     init_git_repo(repo)
-    branch = git(repo, 'symbolic-ref', '--short', 'HEAD')
+    branch = 'merge-target'
     outside = tmp_path / 'outside'
     outside.mkdir()
     monkeypatch.chdir(outside)

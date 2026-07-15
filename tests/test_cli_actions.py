@@ -9,6 +9,7 @@ import pytest
 from taskq import TOOL_NAME
 from taskq.actions.add import AddAction
 from taskq.actions.filter import FilterActionBase
+from taskq.backends.base import BackendError
 from taskq.cli import CLI
 
 
@@ -28,14 +29,16 @@ def enable_fake_merge(monkeypatch, fake_backend):
         raising=False,
     )
 
-    def resolve_merge_spec(self, branch, cwd=None):
+    def resolve_merge_spec(self, branch, cwd=None, create=True):
         call = ('resolve_merge_spec', branch)
         if cwd is not None:
             call += (cwd,)
+        if not create:
+            call += (False,)
         self.calls.append(call)
         return {
             'requested': True,
-            'target_branch': branch or 'main',
+            'target_branch': branch,
         }
 
     monkeypatch.setattr(
@@ -174,7 +177,7 @@ def test_add_merge_implies_head_and_resolves_target(
     enable_fake_merge(monkeypatch, fake_backend)
 
     _, out = run_cli(
-        ['add', '--merge', '--branch', 'main', 'echo', 'hi'],
+        ['add', '--merge', 'main', 'echo', 'hi'],
         rc_file,
         capsys,
     )
@@ -193,25 +196,104 @@ def test_add_merge_implies_head_and_resolves_target(
     assert out.strip() == 'Added: 100'
 
 
+def test_add_merge_implicit_head_reuses_captured_merge_source(
+    fake_backend, rc_file, monkeypatch, capsys
+):
+    enable_fake_merge(monkeypatch, fake_backend)
+
+    def resolve_merge_spec(self, branch, cwd=None, create=True):
+        self.calls.append(('resolve_merge_spec', branch))
+        return {
+            'requested': True,
+            'target_branch': branch,
+            'source_head': 'head-captured-by-merge',
+            'repo_root': '/captured/repo',
+            'source_cwd': '/captured/repo/subdir',
+        }
+
+    def resolve_git_ref(self, ref):
+        self.calls.append(('resolve_git_ref', ref))
+        return '/later/repo', 'head-resolved-later'
+
+    monkeypatch.setattr(
+        fake_backend, 'resolve_merge_spec', resolve_merge_spec, raising=False)
+    monkeypatch.setattr(
+        fake_backend, 'resolve_git_ref', resolve_git_ref, raising=False)
+
+    _, out = run_cli(
+        ['add', '--merge', 'project1', 'echo', 'hi'], rc_file, capsys)
+
+    backend = fake_backend.instances[-1]
+    assert ('resolve_git_ref', 'HEAD') not in backend.calls
+    add_call = [call for call in backend.calls if call[0] == 'add'][-1]
+    assert add_call[-1]['git_ref'] == 'HEAD'
+    assert add_call[-1]['git_commit'] == 'head-captured-by-merge'
+    assert add_call[-1]['git_root'] == '/captured/repo'
+    assert add_call[-1]['source_cwd'] == '/captured/repo/subdir'
+    assert out.strip() == 'Added: 100'
+
+
+def test_add_merge_invalid_explicit_ref_does_not_resolve_destination(
+    fake_backend, rc_file, monkeypatch, capsys
+):
+    enable_fake_merge(monkeypatch, fake_backend)
+
+    def resolve_git_ref(self, ref):
+        self.calls.append(('resolve_git_ref', ref))
+        raise BackendError(f'could not resolve git ref {ref!r}')
+
+    monkeypatch.setattr(
+        fake_backend, 'resolve_git_ref', resolve_git_ref, raising=False)
+
+    code = CLI().main([
+        '-rc', str(rc_file), 'add', '--ref', 'missing',
+        '--merge', 'project1', 'echo', 'hi',
+    ])
+    captured = capsys.readouterr()
+
+    backend = fake_backend.instances[-1]
+    assert code == 2
+    assert "could not resolve git ref 'missing'" in captured.err
+    assert ('resolve_git_ref', 'missing') in backend.calls
+    assert not [
+        call for call in backend.calls if call[0] == 'resolve_merge_spec'
+    ]
+    assert not [call for call in backend.calls if call[0] == 'add']
+
+
 def test_add_merge_validation(fake_backend, rc_file, monkeypatch, capsys):
     code = CLI().main([
-        '-rc', str(rc_file), 'add', '--merge', 'echo', 'hi',
+        '-rc', str(rc_file), 'add', '--merge', 'main', 'echo', 'hi',
+    ])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "backend 'fake' does not support --ref" in captured.err
+
+    monkeypatch.setattr(fake_backend, 'supports_git_ref', True)
+    code = CLI().main([
+        '-rc', str(rc_file), 'add', '--merge', 'main', 'echo', 'hi',
     ])
     captured = capsys.readouterr()
     assert code == 2
     assert "backend 'fake' does not support --merge" in captured.err
 
-    code = CLI().main([
-        '-rc', str(rc_file), 'add', '--branch', 'main', 'echo', 'hi',
-    ])
+    with pytest.raises(SystemExit) as exc:
+        CLI().main([
+            '-rc', str(rc_file), 'add', '--branch', 'main', 'echo', 'hi',
+        ])
     captured = capsys.readouterr()
-    assert code == 2
-    assert '--branch requires --merge' in captured.err
+    assert exc.value.code == 2
+    assert 'unrecognized arguments: --branch' in captured.err
 
-    monkeypatch.setattr(fake_backend, 'supports_git_ref', True)
+    with pytest.raises(SystemExit) as exc:
+        CLI().main(['-rc', str(rc_file), 'add', '--merge'])
+    captured = capsys.readouterr()
+    assert exc.value.code == 2
+    assert 'argument --merge: expected one argument' in captured.err
+
     monkeypatch.setattr(fake_backend, 'supports_git_merge', True)
     code = CLI().main([
-        '-rc', str(rc_file), 'add', '--merge', 'echo', 'hi',
+        '-rc', str(rc_file), 'add', '--merge', 'main', 'echo', 'hi',
     ])
     captured = capsys.readouterr()
     assert code == 2
@@ -224,12 +306,14 @@ def test_add_merge_dry_run_renders_merge_options(
     enable_fake_merge(monkeypatch, fake_backend)
 
     _, out = run_cli([
-        'add', '-d', '--merge', '--branch', 'main', 'echo', 'hi',
+        'add', '-d', '--merge', 'main', 'echo', 'hi',
     ], rc_file, capsys)
 
     assert out.strip() == (
-        f'{TOOL_NAME} add --ref HEAD --merge --branch main -N 1 echo hi'
+        f'{TOOL_NAME} add --ref HEAD --merge main -N 1 echo hi'
     )
+    backend = fake_backend.instances[-1]
+    assert ('resolve_merge_spec', 'main', False) in backend.calls
 
 
 def test_add_repeat_chains_same_command(fake_backend, rc_file, capsys):
@@ -405,7 +489,7 @@ def test_commands_add_command_preserves_merge_target(
     _, out = run_cli(['commands', '-a', '-j', '1'], rc_file, capsys)
 
     assert out == (
-        f'{TOOL_NAME} add --ref abc123 --merge --branch main '
+        f'{TOOL_NAME} add --ref abc123 --merge main '
         '-G 1 -N 2 python train.py\n'
     )
 
@@ -571,7 +655,7 @@ def test_rerun_preserves_merge_target(
 
     _, out = run_cli(['rerun', '-d', '1'], rc_file, capsys)
     assert (
-        f'{TOOL_NAME} add --ref abc123 --merge --branch main '
+        f'{TOOL_NAME} add --ref abc123 --merge main '
         '-G 1 -N 2 python train.py'
     ) in out
 

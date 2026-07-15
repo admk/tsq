@@ -9,9 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from taskq import git as git_utils
 from taskq.backends.base import BackendError
 from taskq.backends.tmux import lifecycle
 from taskq.merge import build_merge_spec, cancel_merge_job, register_merge_job
+from taskq.merge import controller as merge_controller_module
 from taskq.merge.controller import MergeController
 from taskq.merge.state import MergeState
 
@@ -183,6 +185,16 @@ def set_ready_order(state, request_ids):
         os.utime(path, ns=(timestamp, timestamp))
 
 
+def stage_without_landing(harness):
+    """Run one pass through staging while simulating a pre-landing stop."""
+    land = harness.controller._land_staged
+    harness.controller._land_staged = lambda lane: None
+    try:
+        harness.controller.reconcile()
+    finally:
+        harness.controller._land_staged = land
+
+
 @pytest.fixture
 def merge_harness(tmp_path, monkeypatch):
     monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
@@ -195,6 +207,10 @@ def merge_harness(tmp_path, monkeypatch):
         root = tmp_path / 'case-{}'.format(serial)
         repo = root / 'repo'
         base_head = init_repo(repo)
+        # Merge destinations are never allowed to be attached to a worktree.
+        # Keep the ordinary test checkout on an observer branch while the
+        # standalone FIFO advances main as an unchecked ref.
+        git(repo, 'switch', '-c', 'observer')
         source = root / 'job-worktree'
         git(repo, 'worktree', 'add', '--detach', source, base_head)
         if change_text is not None:
@@ -219,7 +235,7 @@ def merge_harness(tmp_path, monkeypatch):
                 'conflict_prompt': 'resolve $change_head into $target_branch',
                 'timeout': 30,
             },
-        }, repo)
+        }, repo, branch='main')
         meta = {
             'id': 1,
             'submission_id': submission_id,
@@ -258,29 +274,153 @@ def merge_harness(tmp_path, monkeypatch):
         state.close()
 
 
-def test_build_merge_spec_captures_branch_and_requires_explicit_detached_target(
+def test_build_merge_spec_requires_unchecked_destination_and_creates_missing_branch(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
     repo = tmp_path / 'repo'
     head = init_repo(repo)
-    git(repo, 'switch', '-c', 'topic')
+    with pytest.raises(BackendError, match='must be specified'):
+        build_merge_spec({}, repo)
+    with pytest.raises(BackendError, match="'main' is checked out"):
+        build_merge_spec({}, repo, branch='main')
 
-    spec = build_merge_spec({}, repo)
+    spec = build_merge_spec({}, repo, branch='project1')
 
     assert spec['source_head'] == head
-    assert spec['target_branch'] == 'topic'
-    assert spec['target_ref'] == 'refs/heads/topic'
+    assert spec['target_branch'] == 'project1'
+    assert spec['target_ref'] == 'refs/heads/project1'
     assert spec['target_head'] == head
+    assert git(repo, 'rev-parse', 'refs/heads/project1') == head
 
-    git(repo, 'switch', '--detach', head)
-    with pytest.raises(BackendError, match='detached HEAD requires an explicit'):
-        build_merge_spec({}, repo)
+    linked = tmp_path / 'linked'
+    git(repo, 'worktree', 'add', linked, 'project1')
+    with pytest.raises(BackendError, match="'project1' is checked out"):
+        build_merge_spec({}, repo, branch='project1')
 
-    detached = build_merge_spec({}, repo, branch='main')
-    assert detached['source_head'] == head
-    assert detached['target_branch'] == 'main'
-    assert detached['target_ref'] == 'refs/heads/main'
+
+def test_build_merge_spec_validation_does_not_create_missing_branch(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    repo = tmp_path / 'repo'
+    head = init_repo(repo)
+
+    spec = build_merge_spec({}, repo, branch='dry-target', create=False)
+
+    assert spec['source_head'] == spec['target_head'] == head
+    assert git(
+        repo, 'show-ref', '--verify', 'refs/heads/dry-target', check=False,
+    ).returncode
+
+
+def test_build_merge_spec_rejects_symbolic_branch_alias_to_checked_out_head(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    repo = tmp_path / 'repo'
+    head = init_repo(repo)
+    git(repo, 'symbolic-ref', 'refs/heads/alias', 'refs/heads/main')
+
+    with pytest.raises(BackendError, match='symbolic local target branch'):
+        build_merge_spec({}, repo, branch='alias')
+
+    assert git(repo, 'rev-parse', 'refs/heads/main') == head
+    assert git(repo, 'symbolic-ref', 'refs/heads/alias') == 'refs/heads/main'
+
+
+def test_build_merge_spec_rejects_noncanonical_case_alias(tmp_path, monkeypatch):
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    repo = tmp_path / 'repo'
+    head = init_repo(repo)
+
+    with pytest.raises(BackendError, match='noncanonical'):
+        build_merge_spec({}, repo, branch='Main')
+
+    assert git(repo, 'rev-parse', 'refs/heads/main') == head
+
+
+def test_build_merge_spec_rejects_unicode_normalization_alias(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    repo = tmp_path / 'repo'
+    init_repo(repo)
+    composed = 'caf\N{LATIN SMALL LETTER E WITH ACUTE}'
+    decomposed = 'cafe\N{COMBINING ACUTE ACCENT}'
+    git(repo, 'branch', composed)
+    refs = git(
+        repo, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/',
+    ).splitlines()
+    stored = next(value for value in refs if value not in {'main'})
+    requested = decomposed if stored == composed else composed
+
+    with pytest.raises(BackendError, match='noncanonical'):
+        build_merge_spec({}, repo, branch=requested)
+
+
+def test_build_merge_spec_treats_rebasing_branch_as_checked_out(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    repo = tmp_path / 'repo'
+    init_repo(repo)
+    git(repo, 'switch', '-c', 'upstream')
+    (repo / 'tracked.txt').write_text('upstream\n', encoding='utf-8')
+    git(repo, 'commit', '-am', 'upstream')
+    git(repo, 'switch', 'main')
+    (repo / 'tracked.txt').write_text('main\n', encoding='utf-8')
+    git(repo, 'commit', '-am', 'main')
+    result = git(repo, 'rebase', 'upstream', check=False)
+    assert result.returncode != 0
+    assert git(
+        repo, 'symbolic-ref', '--quiet', 'HEAD', check=False,
+    ).returncode != 0
+
+    with pytest.raises(BackendError, match="'main' is checked out"):
+        build_merge_spec({}, repo, branch='main')
+
+
+def test_build_merge_spec_treats_bisected_branch_as_checked_out(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    repo = tmp_path / 'repo'
+    init_repo(repo)
+    for number in range(3):
+        (repo / 'tracked.txt').write_text(
+            'revision {}\n'.format(number), encoding='utf-8')
+        git(repo, 'commit', '-am', 'revision {}'.format(number))
+    git(repo, 'bisect', 'start', 'HEAD', 'HEAD~3')
+    assert git(
+        repo, 'symbolic-ref', '--quiet', 'HEAD', check=False,
+    ).returncode != 0
+
+    with pytest.raises(BackendError, match="'main' is checked out"):
+        build_merge_spec({}, repo, branch='main')
+
+
+def test_build_merge_spec_finds_bisect_reservation_in_missing_linked_worktree(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    repo = tmp_path / 'repo'
+    init_repo(repo)
+    for number in range(3):
+        (repo / 'tracked.txt').write_text(
+            'revision {}\n'.format(number), encoding='utf-8')
+        git(repo, 'commit', '-am', 'revision {}'.format(number))
+    git(repo, 'branch', 'topic')
+    linked = tmp_path / 'linked'
+    git(repo, 'worktree', 'add', linked, 'topic')
+    git(linked, 'bisect', 'start', 'HEAD', 'HEAD~3')
+    assert git(
+        linked, 'symbolic-ref', '--quiet', 'HEAD', check=False,
+    ).returncode != 0
+    linked.rename(tmp_path / 'moved-without-git-worktree-repair')
+
+    with pytest.raises(BackendError, match="'topic' is checked out"):
+        build_merge_spec({}, repo, branch='topic')
 
 
 def test_merge_state_assigns_fifo_when_requests_become_ready_and_persists(tmp_path):
@@ -347,8 +487,9 @@ def test_controller_lands_clean_change_and_late_cancel_preserves_success(
     result = json.loads(Path(request['result_file']).read_text(encoding='utf-8'))
     assert request['status'] == 'landed'
     assert landed_head != harness.base_head
-    assert git(harness.repo, 'rev-parse', 'HEAD') == landed_head
-    assert (harness.repo / 'job.txt').read_text(encoding='utf-8') == 'from job\n'
+    assert git(harness.repo, 'rev-parse', 'HEAD') == harness.base_head
+    assert not (harness.repo / 'job.txt').exists()
+    assert git(harness.repo, 'show', 'main:job.txt') == 'from job'
     assert result['status'] == 'success'
     assert result['merge']['stage'] == 'landed'
     assert harness.backend.add_calls == []
@@ -375,8 +516,8 @@ def test_controller_cleanly_cherry_picks_tracked_edit_with_signing_enabled(
     harness.controller.reconcile()
 
     assert harness.request['status'] == 'landed'
-    assert (harness.repo / 'tracked.txt').read_text(
-        encoding='utf-8') == 'edited by job\n'
+    assert git(harness.repo, 'show', 'main:tracked.txt') == 'edited by job'
+    assert (harness.repo / 'tracked.txt').read_text(encoding='utf-8') == 'base\n'
     assert harness.backend.add_calls == []
 
 
@@ -396,10 +537,11 @@ def test_controller_completes_noop_without_moving_target(merge_harness):
     assert harness.backend.add_calls == []
 
 
-def test_dirty_checked_out_target_stages_without_ref_movement_then_lands(
+def test_target_checked_out_after_submission_fails_without_delayed_landing(
     merge_harness,
 ):
     harness = merge_harness()
+    git(harness.repo, 'switch', 'main')
     dirty = harness.repo / 'keep-me.txt'
     dirty.write_bytes(b'user work must survive\n')
     before_status = git(harness.repo, 'status', '--porcelain')
@@ -408,32 +550,108 @@ def test_dirty_checked_out_target_stages_without_ref_movement_then_lands(
 
     request = harness.request
     lane = harness.lane
-    assert request['status'] == 'staged'
+    assert request['status'] == 'failed'
     assert git(harness.repo, 'rev-parse', 'refs/heads/main') == harness.base_head
     assert git(harness.repo, 'rev-parse', 'HEAD') == harness.base_head
     assert git(harness.repo, 'status', '--porcelain') == before_status
     assert dirty.read_bytes() == b'user work must survive\n'
-    assert git(harness.repo, 'rev-parse', lane['staging_ref']) == request['staged_head']
     assert request['staged_head'] != harness.base_head
-    assert 'dirty' in lane['blocked_reason']
-    assert Path(lane['staging_worktree']).exists()
+    assert 'became checked out' in request['error']
+    assert not Path(lane['staging_worktree']).exists()
 
     dirty.unlink()
+    git(harness.repo, 'switch', 'observer')
     harness.controller.reconcile()
 
     request = harness.request
-    assert request['status'] == 'landed'
-    assert git(harness.repo, 'rev-parse', 'refs/heads/main') == request['staged_head']
-    assert git(harness.repo, 'rev-parse', 'HEAD') == request['staged_head']
-    assert (harness.repo / 'job.txt').read_text(encoding='utf-8') == 'from job\n'
-    assert harness.lane['blocked_reason'] is None
+    assert request['status'] == 'failed'
+    assert git(harness.repo, 'rev-parse', 'refs/heads/main') == harness.base_head
+    assert git(harness.repo, 'rev-parse', 'HEAD') == harness.base_head
+    assert not (harness.repo / 'job.txt').exists()
+
+
+def test_symbolic_swap_at_final_cas_cannot_move_checked_out_referent(
+    merge_harness, monkeypatch,
+):
+    harness = merge_harness()
+    observer_head = git(harness.repo, 'rev-parse', 'refs/heads/observer')
+    original_update_ref = git_utils.update_ref
+    raced = False
+
+    def racing_update_ref(cwd, ref, new, **kwargs):
+        nonlocal raced
+        if (
+            not raced
+            and ref == 'refs/heads/main'
+            and kwargs.get('no_deref') is True
+        ):
+            raced = True
+            git(
+                harness.repo, 'symbolic-ref', 'refs/heads/main',
+                'refs/heads/observer',
+            )
+        return original_update_ref(cwd, ref, new, **kwargs)
+
+    monkeypatch.setattr(
+        merge_controller_module, 'update_ref', racing_update_ref)
+
+    harness.controller.reconcile()
+
+    assert raced is True
+    assert harness.request['status'] == 'staged'
+    assert git(
+        harness.repo, 'symbolic-ref', 'refs/heads/main',
+    ) == 'refs/heads/observer'
+    assert git(harness.repo, 'rev-parse', 'refs/heads/observer') == observer_head
+    assert not (harness.repo / 'job.txt').exists()
+
+    harness.controller.reconcile()
+
+    assert harness.request['status'] == 'failed'
+    assert 'symbolic local target branch' in harness.request['error']
+    assert git(harness.repo, 'rev-parse', 'refs/heads/observer') == observer_head
+    assert not (harness.repo / 'job.txt').exists()
+
+
+def test_noncanonical_rename_at_final_cas_cannot_move_aliased_ref(
+    merge_harness, monkeypatch,
+):
+    harness = merge_harness()
+    original_update_ref = git_utils.update_ref
+    raced = False
+
+    def racing_update_ref(cwd, ref, new, **kwargs):
+        nonlocal raced
+        if (
+            not raced
+            and ref == 'refs/heads/main'
+            and kwargs.get('no_deref') is True
+        ):
+            raced = True
+            git(harness.repo, 'branch', '-M', 'main', 'Main')
+        return original_update_ref(cwd, ref, new, **kwargs)
+
+    monkeypatch.setattr(
+        merge_controller_module, 'update_ref', racing_update_ref)
+
+    harness.controller.reconcile()
+
+    assert raced is True
+    assert harness.request['status'] == 'staged'
+    assert git(harness.repo, 'rev-parse', 'refs/heads/Main') == harness.base_head
+
+    harness.controller.reconcile()
+
+    assert harness.request['status'] == 'failed'
+    assert 'noncanonical' in harness.request['error']
+    assert git(harness.repo, 'rev-parse', 'refs/heads/Main') == harness.base_head
+    assert not (harness.repo / 'job.txt').exists()
 
 
 def test_unchecked_target_branch_advances_without_moving_current_checkout(
     merge_harness,
 ):
     harness = merge_harness()
-    git(harness.repo, 'switch', '-c', 'observer')
     observer_head = git(harness.repo, 'rev-parse', 'HEAD')
 
     harness.controller.reconcile()
@@ -449,40 +667,43 @@ def test_unchecked_target_branch_advances_without_moving_current_checkout(
 
 def test_target_advancement_rebuilds_staging_before_landing(merge_harness):
     harness = merge_harness()
-    blocker = harness.repo / 'local.txt'
-    blocker.write_text('temporarily dirty\n', encoding='utf-8')
-    harness.controller.reconcile()
+    stage_without_landing(harness)
     first_staged_head = harness.request['staged_head']
     assert harness.request['status'] == 'staged'
 
-    blocker.unlink()
     (harness.repo / 'upstream.txt').write_text('upstream\n', encoding='utf-8')
     git(harness.repo, 'add', 'upstream.txt')
     git(harness.repo, 'commit', '-m', 'advance destination')
     advanced_head = git(harness.repo, 'rev-parse', 'HEAD')
+    git(
+        harness.repo, 'update-ref', 'refs/heads/main', advanced_head,
+        harness.base_head,
+    )
 
     harness.controller.reconcile()
 
     assert harness.request['status'] == 'landed'
     assert harness.request['staged_head'] != first_staged_head
-    assert git(harness.repo, 'merge-base', '--is-ancestor', advanced_head, 'HEAD') == ''
-    assert (harness.repo / 'upstream.txt').read_text(
-        encoding='utf-8') == 'upstream\n'
-    assert (harness.repo / 'job.txt').read_text(encoding='utf-8') == 'from job\n'
+    landed = git(harness.repo, 'rev-parse', 'refs/heads/main')
+    assert git(
+        harness.repo, 'merge-base', '--is-ancestor', advanced_head, landed,
+    ) == ''
+    assert git(harness.repo, 'show', 'main:upstream.txt') == 'upstream'
+    assert git(harness.repo, 'show', 'main:job.txt') == 'from job'
 
 
 def test_reconcile_recovers_target_fast_forward_before_database_finalize(
     merge_harness,
 ):
     harness = merge_harness()
-    blocker = harness.repo / 'local.txt'
-    blocker.write_text('temporarily dirty\n', encoding='utf-8')
-    harness.controller.reconcile()
+    stage_without_landing(harness)
     staged = harness.request
     assert staged['status'] == 'staged'
 
-    blocker.unlink()
-    git(harness.repo, 'merge', '--ff-only', staged['staged_head'])
+    git(
+        harness.repo, 'update-ref', 'refs/heads/main', staged['staged_head'],
+        harness.base_head,
+    )
     assert harness.request['status'] == 'staged'
 
     harness.controller.reconcile()
@@ -491,10 +712,11 @@ def test_reconcile_recovers_target_fast_forward_before_database_finalize(
     assert harness.request['status'] == 'landed'
     assert result['status'] == 'success'
     assert result['merge']['recovered'] is True
-    assert git(harness.repo, 'rev-parse', 'HEAD') == staged['staged_head']
+    assert git(harness.repo, 'rev-parse', 'refs/heads/main') == staged['staged_head']
+    assert git(harness.repo, 'rev-parse', 'HEAD') == harness.base_head
 
 
-def test_ignored_untracked_collision_waits_without_overwrite_then_lands(
+def test_unchecked_target_landing_does_not_touch_ignored_checkout_paths(
     merge_harness,
 ):
     harness = merge_harness(change_text=None)
@@ -516,26 +738,15 @@ def test_ignored_untracked_collision_waits_without_overwrite_then_lands(
     harness.controller.reconcile()
 
     request = harness.request
-    assert request['status'] == 'staged'
-    assert git(harness.repo, 'rev-parse', 'refs/heads/main') == harness.base_head
+    assert request['status'] == 'landed'
+    assert git(harness.repo, 'rev-parse', 'refs/heads/main') == request['staged_head']
     assert git(harness.repo, 'rev-parse', 'HEAD') == harness.base_head
     assert local_collision.read_bytes() == b'ignored local bytes\n'
     assert unrelated.read_bytes() == b'unrelated ignored artifact\n'
-    assert 'incoming.txt' in harness.lane['blocked_reason']
-    assert 'unrelated.cache' not in harness.lane['blocked_reason']
-
-    local_collision.unlink()
-    harness.controller.reconcile()
-
-    request = harness.request
-    assert request['status'] == 'landed'
-    assert git(harness.repo, 'rev-parse', 'refs/heads/main') == request['staged_head']
-    assert git(harness.repo, 'rev-parse', 'HEAD') == request['staged_head']
-    assert local_collision.read_bytes() == b'bytes from merge job\n'
-    assert unrelated.read_bytes() == b'unrelated ignored artifact\n'
+    assert git(harness.repo, 'show', 'main:incoming.txt') == 'bytes from merge job'
 
 
-def test_casefolded_ignored_collision_waits_on_case_insensitive_worktree(
+def test_casefolded_ignored_checkout_path_is_untouched_by_ref_landing(
     merge_harness,
 ):
     harness = merge_harness(change_text=None)
@@ -558,18 +769,10 @@ def test_casefolded_ignored_collision_waits_on_case_insensitive_worktree(
     harness.controller.reconcile()
 
     request = harness.request
-    assert request['status'] == 'staged'
+    assert request['status'] == 'landed'
     assert git(harness.repo, 'rev-parse', 'HEAD') == harness.base_head
     assert local_collision.read_bytes() == b'ignored local bytes\n'
-    assert 'Incoming.txt' in harness.lane['blocked_reason']
-    assert 'incoming.txt' in harness.lane['blocked_reason']
-
-    local_collision.unlink()
-    harness.controller.reconcile()
-
-    request = harness.request
-    assert request['status'] == 'landed'
-    assert (harness.repo / 'Incoming.txt').read_bytes() == b'bytes from merge job\n'
+    assert git(harness.repo, 'show', 'main:Incoming.txt') == 'bytes from merge job'
 
 
 def test_fifo_conflict_runs_one_inherited_environment_resolver_then_lands(
@@ -644,8 +847,7 @@ def test_fifo_conflict_runs_one_inherited_environment_resolver_then_lands(
     second = harness.state.get_request(second['id'])
     assert first['status'] == second['status'] == 'landed'
     assert len(harness.backend.add_calls) == 1
-    assert (harness.repo / 'tracked.txt').read_text(
-        encoding='utf-8') == 'first and second resolved\n'
+    assert git(harness.repo, 'show', 'main:tracked.txt') == 'first and second resolved'
     assert git(harness.repo, 'rev-parse', 'refs/heads/main') == second['staged_head']
 
 
@@ -657,9 +859,6 @@ def test_resolved_delta_replays_after_target_moves_without_second_resolver(
     second, _, _ = register_additional_merge_job(
         harness, 2, {'tracked.txt': 'second change\n'})
     set_ready_order(harness.state, [harness.request_id, second['id']])
-    blocker = harness.repo / 'local.tmp'
-    blocker.write_text('keep destination dirty\n', encoding='utf-8')
-
     harness.controller.reconcile()
     call = harness.backend.add_calls[0]
     staging = Path(call['cwd'])
@@ -668,7 +867,7 @@ def test_resolved_delta_replays_after_target_moves_without_second_resolver(
     git(staging, 'add', 'tracked.txt')
     git(staging, 'cherry-pick', '--continue')
     harness.backend.finish(call['id'])
-    harness.controller.reconcile()
+    stage_without_landing(harness)
 
     second = harness.state.get_request(second['id'])
     resolved_head = second['result']['resolved_head']
@@ -677,11 +876,14 @@ def test_resolved_delta_replays_after_target_moves_without_second_resolver(
     assert git(
         harness.repo, 'rev-parse', second['result']['resolved_ref']) == resolved_head
 
-    blocker.unlink()
     (harness.repo / 'upstream.txt').write_text('upstream\n', encoding='utf-8')
     git(harness.repo, 'add', 'upstream.txt')
     git(harness.repo, 'commit', '-m', 'advance target after resolution')
     advanced = git(harness.repo, 'rev-parse', 'HEAD')
+    git(
+        harness.repo, 'update-ref', 'refs/heads/main', advanced,
+        harness.base_head,
+    )
 
     harness.controller.reconcile()
 
@@ -690,11 +892,12 @@ def test_resolved_delta_replays_after_target_moves_without_second_resolver(
     assert len(harness.backend.add_calls) == 1
     assert second['resolver_attempts'] == 1
     assert second['result']['resolved_head'] == resolved_head
-    assert git(harness.repo, 'merge-base', '--is-ancestor', advanced, 'HEAD') == ''
-    assert (harness.repo / 'tracked.txt').read_text(
-        encoding='utf-8') == 'first and second resolved\n'
-    assert (harness.repo / 'upstream.txt').read_text(
-        encoding='utf-8') == 'upstream\n'
+    landed = git(harness.repo, 'rev-parse', 'refs/heads/main')
+    assert git(
+        harness.repo, 'merge-base', '--is-ancestor', advanced, landed,
+    ) == ''
+    assert git(harness.repo, 'show', 'main:tracked.txt') == 'first and second resolved'
+    assert git(harness.repo, 'show', 'main:upstream.txt') == 'upstream'
 
 
 def test_failed_conflict_resolver_drops_only_request_and_lands_later_fifo_work(
@@ -735,9 +938,8 @@ def test_failed_conflict_resolver_drops_only_request_and_lands_later_fifo_work(
     assert failure['failure_phase'] == 'merge'
     assert 'resolver could not reconcile intent' in failure['error']
     assert len(harness.backend.add_calls) == 1
-    assert (harness.repo / 'tracked.txt').read_text(
-        encoding='utf-8') == 'first change\n'
-    assert (harness.repo / 'later.txt').read_text(encoding='utf-8') == 'later work\n'
+    assert git(harness.repo, 'show', 'main:tracked.txt') == 'first change'
+    assert git(harness.repo, 'show', 'main:later.txt') == 'later work'
     assert second_source.exists()
     assert (second_source / 'tracked.txt').read_text(
         encoding='utf-8') == 'conflicting change\n'
@@ -781,10 +983,8 @@ def test_resolver_launch_failure_fails_only_conflicted_fifo_request(
     assert 'could not launch merge conflict resolver' in failure['error']
     assert 'resolver queue unavailable' in failure['error']
     assert harness.backend.add_calls == []
-    assert (harness.repo / 'tracked.txt').read_text(
-        encoding='utf-8') == 'first change\n'
-    assert (harness.repo / 'later.txt').read_text(
-        encoding='utf-8') == 'later work\n'
+    assert git(harness.repo, 'show', 'main:tracked.txt') == 'first change'
+    assert git(harness.repo, 'show', 'main:later.txt') == 'later work'
 
 
 @pytest.mark.parametrize('operation', ['--abort', '--skip'])
@@ -810,8 +1010,7 @@ def test_resolver_cannot_claim_success_after_discarding_conflicted_change(
     assert second['status'] == 'failed'
     assert failure['failure_phase'] == 'merge'
     assert 'completed clean cherry-pick' in failure['error']
-    assert (harness.repo / 'tracked.txt').read_text(
-        encoding='utf-8') == 'first change\n'
+    assert git(harness.repo, 'show', 'main:tracked.txt') == 'first change'
 
 
 def test_terminal_database_state_reprojects_missing_result_sidecar(merge_harness):
@@ -936,9 +1135,7 @@ def test_cancelled_staged_request_never_lands_and_cleans_owned_staging(
     merge_harness,
 ):
     harness = merge_harness()
-    dirty = harness.repo / 'keep-me.txt'
-    dirty.write_text('local work\n', encoding='utf-8')
-    harness.controller.reconcile()
+    stage_without_landing(harness)
     staged = harness.request
     staging_ref = harness.lane['staging_ref']
     staging_worktree = Path(harness.lane['staging_worktree'])
@@ -954,7 +1151,6 @@ def test_cancelled_staged_request_never_lands_and_cleans_owned_staging(
         check=False,
     ).returncode
 
-    dirty.unlink()
     harness.controller.reconcile()
 
     assert harness.request['status'] == 'cancelled'
@@ -968,9 +1164,7 @@ def test_remove_cancellation_publishes_owned_tombstone_before_deletion(
     merge_harness,
 ):
     harness = merge_harness()
-    dirty = harness.repo / 'keep-dirty.txt'
-    dirty.write_text('local work\n', encoding='utf-8')
-    harness.controller.reconcile()
+    stage_without_landing(harness)
     request = harness.request
     assert request['status'] == 'staged'
 

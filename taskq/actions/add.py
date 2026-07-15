@@ -50,15 +50,12 @@ class AddAction(DryActionBase):
                 'The ref is resolved to an exact commit when queued.'),
         },
         ('--merge', ): {
-            'action': 'store_true',
-            'help': (
-                'Merge successful job changes back into the destination '
-                'branch.'),
-        },
-        ('--branch', ): {
             'type': str,
             'default': None,
-            'help': 'Destination branch for --merge.',
+            'metavar': 'BRANCH',
+            'help': (
+                'Merge successful job changes back into the destination '
+                'branch. If the branch does not exist, create it from HEAD.'),
         },
         **repeat_options,
         ('-u', '--unique'): {
@@ -101,9 +98,8 @@ class AddAction(DryActionBase):
             parse_id_selector(args.depends_on)
             if args.depends_on else []
         )
-        if args.branch is not None and not args.merge:
-            raise CLIError('--branch requires --merge')
-        if args.merge and args.ref is None:
+        args.implicit_merge_head = args.merge is not None and args.ref is None
+        if args.implicit_merge_head:
             args.ref = 'HEAD'
         args.repeat = validate_repeat_count(args.repeat)
         return args
@@ -210,8 +206,19 @@ class AddAction(DryActionBase):
             raise CLIError(
                 f"backend {self.backend.name!r} does not support --ref")
 
-    def _resolve_ref(self, ref):
+    def _resolve_ref(self, ref, merge_spec=None):
         self._validate_ref_support(ref)
+        if ref and isinstance(merge_spec, dict):
+            git_commit = merge_spec.get('source_head')
+            git_root = merge_spec.get('repo_root')
+            if git_commit and git_root:
+                return {
+                    'git_ref': ref,
+                    'git_commit': git_commit,
+                    'git_root': git_root,
+                    'source_cwd': (
+                        merge_spec.get('source_cwd') or os.getcwd()),
+                }
         if ref and hasattr(self.backend, 'resolve_git_ref'):
             git_root, git_commit = self.backend.resolve_git_ref(ref)
             return {
@@ -228,10 +235,13 @@ class AddAction(DryActionBase):
     def _request_kwargs(ref_kwargs, merge_kwargs=None):
         return dict(ref_kwargs, **(merge_kwargs or {}))
 
-    def _resolve_merge(self, merge, branch):
-        if not merge:
+    def _resolve_merge(self, branch, commit=True):
+        if branch is None:
             return {}
-        return {'merge': resolve_backend_merge_spec(self.backend, branch)}
+        return {
+            'merge': resolve_backend_merge_spec(
+                self.backend, branch, create=commit),
+        }
 
     def main(self, args):
         commands = self._extrapolate_inputs(
@@ -257,8 +267,16 @@ class AddAction(DryActionBase):
             if STDIN_TTY:
                 print('Use "-f -" to read commands from stdin.')
             return
-        merge_kwargs = self._resolve_merge(args.merge, args.branch)
-        ref_kwargs = self._resolve_ref(args.ref)
+        self._validate_ref_support(args.ref)
+        if args.implicit_merge_head:
+            merge_kwargs = self._resolve_merge(
+                args.merge, commit=args.commit)
+            ref_kwargs = self._resolve_ref(
+                args.ref, merge_spec=merge_kwargs.get('merge'))
+        else:
+            ref_kwargs = self._resolve_ref(args.ref)
+            merge_kwargs = self._resolve_merge(
+                args.merge, commit=args.commit)
         if not args.commit:
             gpus, slots = self._resolved_alloc(self.backend.config, args)
             requests = [
@@ -279,7 +297,6 @@ class AddAction(DryActionBase):
                         depends_on,
                         request.kwargs.get('git_ref'),
                         args.merge,
-                        args.branch,
                     )
                 ),
                 chain=args.chain,

@@ -111,17 +111,19 @@ or the backend is reset.
 Without `--merge`, merging changes back is manual.
 
 `--merge BRANCH` makes landing into an explicit destination branch part of the
-job lifecycle. If `--ref` is omitted, taskq pins `HEAD` when the job is queued.
-If the destination branch does not exist, taskq creates it from that same
-captured `HEAD`. The destination must not be checked out as `HEAD`; taskq rejects
-the job instead of moving an active checkout unexpectedly. After a command exits
-successfully, taskq records its final tree delta as one change, integrates ready
-changes through a per-repository/branch FIFO, and marks the parent job successful
-only after the destination branch contains that change. A failed command is
-never merged.
+job lifecycle. Taskq captures `HEAD` when the job is queued. If `--ref` is
+omitted, that exact commit is also used as the job source. If the destination
+branch does not exist, taskq creates it from the captured `HEAD`, independently
+of an explicit `--ref`. The destination must not be checked out as `HEAD` in any
+worktree; taskq rejects the job instead of moving an active checkout
+unexpectedly. After a command exits successfully, taskq records its final tree
+delta as one change, integrates ready changes through a per-repository/branch
+FIFO, and marks the parent job successful only after the destination branch
+contains that change. A failed command is never merged.
 
 FIFO integration happens in a taskq-owned staging worktree. If the destination
-branch is checked out after the job is queued, taskq does not advance it.
+branch becomes checked out after the job is queued, the merge phase fails
+without advancing it; switching away later does not trigger delayed landing.
 Otherwise, the destination is advanced atomically without changing any active
 checkout. Conflicts run the configured `[merge]` resolver once in the staging
 worktree. Use `tq info ID` or follow the parent output to inspect merge progress.

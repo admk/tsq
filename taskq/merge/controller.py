@@ -23,15 +23,13 @@ from ..git import (
     is_ancestor,
     is_clean,
     local_branch,
+    local_branch_ref,
     reset_hard,
     resolve_commit,
     synthetic_change_commit,
     update_ref,
 )
 from ..integration import (
-    LandingBlocked,
-    LandingMoved,
-    fast_forward_checked_out,
     target_integration_lock,
 )
 from .state import ACTIVE_REQUEST_STATES, MergeState, TERMINAL_REQUEST_STATES
@@ -700,13 +698,37 @@ class MergeController:
     def _land_staged(self, lane):
         # Explore campaigns and standalone merge queues have different FIFO
         # state machines, but both use this repository/ref landing lock so
-        # their clean/head preflight cannot race at the user's checkout.
+        # their target-head preflight and ref mutation cannot race each other.
         with target_integration_lock(lane['repo_root'], lane['target_ref']):
             return self._land_staged_locked(lane)
+
+    @staticmethod
+    def _landing_ref_error(lane):
+        try:
+            _, validated_ref = local_branch_ref(
+                lane['repo_root'], lane['target_branch'])
+            if validated_ref != lane['target_ref']:
+                raise BackendError(
+                    'destination ref changed from {} to {}'.format(
+                        lane['target_ref'], validated_ref))
+        except BackendError as error:
+            return str(error)
+        return None
+
+    def _fail_unsafe_staged(self, lane, staged, error):
+        reason = (
+            'destination branch {!r} became unsafe after submission: {}; '
+            'refusing automatic landing'.format(lane['target_branch'], error))
+        for request in staged:
+            self._fail_request(request, reason, merge_failure=True)
 
     def _land_staged_locked(self, lane):
         staged = self.state.list_requests(lane['id'], statuses={'staged'})
         if not staged:
+            return
+        error = self._landing_ref_error(lane)
+        if error:
+            self._fail_unsafe_staged(lane, staged, error)
             return
         target_head = self._target_head(lane)
         if not target_head:
@@ -719,28 +741,35 @@ class MergeController:
             self.state.update_lane(lane['id'], needs_rebuild=True)
             return
         checkouts = branch_worktrees(lane['repo_root'], lane['target_ref'])
-        if len(checkouts) > 1:
-            self._block_lane(lane, 'destination branch is checked out in multiple worktrees')
-            return
         if checkouts:
-            checkout = checkouts[0]['worktree']
-            try:
-                landed_head = fast_forward_checked_out(
-                    checkout, target_head, staging_head)
-            except LandingBlocked as error:
-                self._block_lane(
-                    lane, str(error))
-                return
-            except LandingMoved:
-                self.state.update_lane(lane['id'], needs_rebuild=True)
-                return
-        elif staging_head == target_head:
+            paths = ', '.join(item['worktree'] for item in checkouts)
+            reason = (
+                'destination branch {!r} became checked out in {} after '
+                'submission; refusing automatic landing'.format(
+                    lane['target_branch'], paths))
+            # This cannot be a transient wait: automatically landing after the
+            # user later switches away would make that unrelated checkout
+            # action trigger a surprising branch advance. A fresh `tq add`
+            # submission is the explicit retry.
+            for request in staged:
+                self._fail_request(request, reason, merge_failure=True)
+            return
+        # Revalidate immediately before the compare-and-swap. In particular,
+        # do not trust a case-canonical/direct-ref check made before the
+        # staging and worktree preflights above.
+        error = self._landing_ref_error(lane)
+        if error:
+            self._fail_unsafe_staged(lane, staged, error)
+            return
+        if staging_head == target_head:
             landed_head = target_head
         else:
             try:
                 landed_head = update_ref(
                     lane['repo_root'], lane['target_ref'], staging_head,
-                    old=target_head, message='taskq merge FIFO landing')
+                    old=target_head, message='taskq merge FIFO landing',
+                    no_deref=True,
+                )
             except BackendError:
                 self.state.update_lane(lane['id'], needs_rebuild=True)
                 return

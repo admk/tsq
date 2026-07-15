@@ -8,6 +8,7 @@ block an operation and which taskq-owned refs/worktrees may be removed.
 import os
 import shutil
 import subprocess
+import unicodedata
 from pathlib import Path
 
 from .backends.base import BackendError
@@ -62,8 +63,18 @@ def resolve_commit(cwd, ref='HEAD'):
     return git(cwd, 'rev-parse', '--verify', '{}^{{commit}}'.format(ref))
 
 
-def local_branch(cwd, branch):
-    """Validate and return ``(short_name, full_ref, head)``."""
+def symbolic_ref(cwd, ref):
+    """Return the symbolic target of *ref*, or ``None`` for a direct ref."""
+    result = git(cwd, 'symbolic-ref', '--quiet', ref, check=False)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _ref_identity(ref):
+    return unicodedata.normalize('NFC', str(ref)).casefold()
+
+
+def local_branch_ref(cwd, branch):
+    """Validate a literal local branch name and return its short/full names."""
     if not isinstance(branch, str) or not branch.strip():
         raise BackendError('target branch must be a non-empty local branch name')
     branch = branch.strip()
@@ -71,13 +82,85 @@ def local_branch(cwd, branch):
         short = branch[len('refs/heads/'):]
     else:
         short = branch
-    if not short or short.startswith('-') or '..' in short:
+    result = git(cwd, 'check-ref-format', '--branch', short, check=False)
+    if result.returncode or result.stdout.strip() != short:
         raise BackendError('invalid local target branch {!r}'.format(branch))
     ref = 'refs/heads/{}'.format(short)
+    local_refs = git(
+        cwd, 'for-each-ref', '--format=%(refname)', 'refs/heads/').splitlines()
+    exists = git(cwd, 'show-ref', '--verify', '--quiet', ref, check=False)
+    if exists.returncode == 0 and ref not in local_refs:
+        raise BackendError(
+            'local target branch {!r} is a noncanonical alias for an existing '
+            'branch'.format(short))
+    folded_ref = _ref_identity(ref)
+    collisions = sorted(
+        actual for actual in local_refs
+        if actual != ref
+        and _ref_identity(actual) == folded_ref
+    )
+    if collisions:
+        names = ', '.join(
+            actual[len('refs/heads/'):] for actual in collisions)
+        raise BackendError(
+            'local target branch {!r} has a noncanonical name collision with '
+            '{}'.format(short, names))
+    symbolic_target = symbolic_ref(cwd, ref)
+    if symbolic_target:
+        raise BackendError(
+            'symbolic local target branch {!r} is not supported (points to {})'
+            .format(short, symbolic_target))
+    return short, ref
+
+
+def local_branch(cwd, branch):
+    """Validate and return ``(short_name, full_ref, head)``."""
+    short, ref = local_branch_ref(cwd, branch)
     check = git(cwd, 'show-ref', '--verify', '--quiet', ref, check=False)
     if check.returncode:
         raise BackendError('local target branch does not exist: {}'.format(short))
-    return short, ref, resolve_commit(cwd, ref)
+    head = resolve_commit(cwd, ref)
+    # Recheck after resolving so a concurrent direct-ref -> symref replacement
+    # cannot be silently accepted by this validation path.
+    local_branch_ref(cwd, short)
+    return short, ref, head
+
+
+def ensure_local_branch(cwd, branch, start_point, message=None):
+    """Return a local branch, atomically creating it at *start_point*.
+
+    Supplying the all-zero old object ID makes ``update-ref`` a create-only
+    compare-and-swap. An identical concurrent create is accepted; a branch
+    concurrently created at another commit produces an error.
+    """
+    short, ref = local_branch_ref(cwd, branch)
+    check = git(cwd, 'show-ref', '--verify', '--quiet', ref, check=False)
+    if check.returncode == 0:
+        head = resolve_commit(cwd, ref)
+        local_branch_ref(cwd, short)
+        return short, ref, head
+    start = resolve_commit(cwd, start_point)
+    zero = '0' * len(start)
+    try:
+        update_ref(
+            cwd, ref, start, old=zero, message=message, no_deref=True)
+    except BackendError as error:
+        # An identical concurrent create is benign. A different winner must
+        # be surfaced: silently accepting it would violate the promise that a
+        # newly-created destination starts at the submission-time HEAD.
+        check = git(cwd, 'show-ref', '--verify', '--quiet', ref, check=False)
+        if check.returncode:
+            raise
+        local_branch_ref(cwd, short)
+        actual = resolve_commit(cwd, ref)
+        if actual != start:
+            raise BackendError(
+                'local target branch {} was concurrently created at {}; '
+                'expected {}'.format(short, actual[:12], start[:12])
+            ) from error
+    head = resolve_commit(cwd, ref)
+    local_branch_ref(cwd, short)
+    return short, ref, head
 
 
 def current_branch(cwd):
@@ -194,7 +277,16 @@ def diff(cwd, base, head='HEAD', limit=50000):
     return text if len(text) <= limit else text[:limit] + '\n[diff truncated]\n'
 
 
-def update_ref(cwd, ref, new, old=None, message=None):
+def update_ref(cwd, ref, new, old=None, message=None, no_deref=False):
+    """Atomically update a ref, optionally requiring it to remain direct.
+
+    The direct-ref path uses a prepared Git reference transaction. This holds
+    the ref lock while its type is inspected, closing the check/update race in
+    which a symbolic ref with the same peeled OID could otherwise pass Git's
+    ordinary ``--no-deref`` old-value comparison.
+    """
+    if no_deref:
+        return _update_direct_ref(cwd, ref, new, old=old, message=message)
     args = ['update-ref']
     if message:
         args += ['-m', message]
@@ -202,6 +294,100 @@ def update_ref(cwd, ref, new, old=None, message=None):
     if old is not None:
         args.append(old)
     git(cwd, *args)
+    return resolve_commit(cwd, ref)
+
+
+def _update_direct_ref(cwd, ref, new, old=None, message=None):
+    command = ['git', '-C', str(cwd), 'update-ref']
+    if message:
+        command += ['-m', str(message)]
+    command.append('--stdin')
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError as error:
+        raise BackendError('git command not found') from error
+
+    def send(value, expected=None):
+        try:
+            process.stdin.write(value + '\n')
+            process.stdin.flush()
+        except (BrokenPipeError, OSError) as error:
+            detail = process.stderr.read().strip()
+            process.wait()
+            raise BackendError(detail or 'git update-ref transaction failed') from error
+        if expected is None:
+            return
+        response = process.stdout.readline().strip()
+        if response != expected:
+            process.stdin.close()
+            detail = process.stderr.read().strip()
+            process.wait()
+            raise BackendError(
+                detail or 'git update-ref transaction failed: expected {}, got {}'
+                .format(expected, response or '<no response>'))
+
+    finished = False
+    try:
+        send('option no-deref')
+        send('start', 'start: ok')
+        values = ['update', str(ref), str(new)]
+        if old is not None:
+            values.append(str(old))
+        send(' '.join(values))
+        send('prepare', 'prepare: ok')
+        target = symbolic_ref(cwd, ref)
+        if target:
+            send('abort', 'abort: ok')
+            finished = True
+            raise BackendError(
+                'ref {} became symbolic (points to {}); update refused'.format(
+                    ref, target))
+        old_text = '' if old is None else str(old)
+        creating = bool(old_text) and old_text.strip('0') == ''
+        actual_refs = git(
+            cwd, 'for-each-ref', '--format=%(refname)',
+            'refs/heads/',
+        ).splitlines()
+        collisions = [
+            actual for actual in actual_refs
+            if actual != ref and _ref_identity(actual) == _ref_identity(ref)
+        ]
+        if ref.startswith('refs/heads/') and collisions:
+            send('abort', 'abort: ok')
+            finished = True
+            raise BackendError(
+                'ref {} has a noncanonical name collision with {}; update '
+                'refused'.format(ref, ', '.join(sorted(collisions))))
+        if not creating and ref.startswith('refs/heads/') and ref not in actual_refs:
+            send('abort', 'abort: ok')
+            finished = True
+            raise BackendError(
+                'ref {} is no longer a byte-exact local branch; update '
+                'refused'.format(ref))
+        send('commit', 'commit: ok')
+        finished = True
+    except Exception:
+        if not finished and process.poll() is None:
+            try:
+                send('abort', 'abort: ok')
+            except (BackendError, BrokenPipeError, OSError):
+                pass
+        raise
+    finally:
+        if process.stdin and not process.stdin.closed:
+            process.stdin.close()
+        if process.poll() is None:
+            process.wait()
+    if process.returncode:
+        detail = process.stderr.read().strip()
+        raise BackendError(detail or 'git update-ref transaction failed')
     return resolve_commit(cwd, ref)
 
 
@@ -233,8 +419,77 @@ def worktrees(cwd):
     return records
 
 
+def _path_identity(path):
+    return os.path.normcase(str(Path(path).expanduser().resolve()))
+
+
+def _worktree_admin_dirs(cwd, records):
+    """Map porcelain worktree paths to their per-worktree Git directories."""
+    common = Path(common_dir(cwd))
+    mapping = {}
+    if records and not records[0].get('bare'):
+        mapping[_path_identity(records[0]['worktree'])] = common
+    linked = common / 'worktrees'
+    try:
+        entries = list(linked.iterdir())
+    except OSError:
+        entries = []
+    for admin in entries:
+        try:
+            pointer = (admin / 'gitdir').read_text(encoding='utf-8').strip()
+        except OSError:
+            continue
+        git_file = Path(pointer)
+        if not git_file.is_absolute():
+            git_file = admin / git_file
+        mapping[_path_identity(git_file.parent)] = admin
+    return mapping
+
+
+def _worktree_reserved_branches(git_dir):
+    """Return branches reserved by detached rebase/bisect operations."""
+    git_dir = Path(git_dir)
+    values = []
+    for relative in (
+        Path('rebase-merge') / 'head-name',
+        Path('rebase-apply') / 'head-name',
+        Path('BISECT_START'),
+    ):
+        try:
+            value = (git_dir / relative).read_text(encoding='utf-8').strip()
+        except OSError:
+            continue
+        if value.startswith('refs/heads/'):
+            values.append(value)
+        elif value and value != 'HEAD' and not value.startswith('refs/'):
+            values.append('refs/heads/{}'.format(value))
+    return values
+
+
 def branch_worktrees(cwd, target_ref):
-    return [item for item in worktrees(cwd) if item.get('branch') == target_ref]
+    target_folded = _ref_identity(target_ref)
+    matches = []
+    records = worktrees(cwd)
+    admin_dirs = _worktree_admin_dirs(cwd, records)
+    for item in records:
+        branches = [item.get('branch')]
+        if item.get('detached'):
+            git_dir = admin_dirs.get(_path_identity(item['worktree']))
+            if git_dir is None:
+                result = git(
+                    item['worktree'], 'rev-parse', '--absolute-git-dir',
+                    check=False,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    git_dir = Path(result.stdout.strip())
+            if git_dir is not None:
+                branches.extend(_worktree_reserved_branches(git_dir))
+        if any(
+            branch and _ref_identity(branch) == target_folded
+            for branch in branches
+        ):
+            matches.append(item)
+    return matches
 
 
 def add_detached_worktree(cwd, path, start_point):

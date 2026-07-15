@@ -8,8 +8,8 @@ from pathlib import Path
 
 from ..backends.base import BackendError
 from ..git import (
-    atomic_write, common_dir, delete_ref, is_ancestor, local_branch,
-    repository_root, resolve_commit,
+    atomic_write, branch_worktrees, common_dir, delete_ref, is_ancestor,
+    local_branch, repository_root, resolve_commit,
 )
 from .cleanup import cleanup_lane_if_idle, request_refs
 from .config import build_merge_spec, lane_key, repository_key, state_root
@@ -215,6 +215,13 @@ def register_merge_job(backend, meta):
     git_common = common_dir(repo_root)
     target_branch, target_ref, target_head = local_branch(
         repo_root, data['target_branch'])
+    checkouts = branch_worktrees(repo_root, target_ref)
+    if checkouts:
+        raise BackendError(
+            'merge destination branch {!r} is checked out in {}'.format(
+                target_branch,
+                ', '.join(item['worktree'] for item in checkouts),
+            ))
     expected_lane = lane_key(git_common, target_ref)
     if data.get('lane_id') not in {None, expected_lane}:
         raise BackendError('merge lane does not match repository destination')

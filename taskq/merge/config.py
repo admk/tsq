@@ -7,7 +7,15 @@ from pathlib import Path
 
 from ..backends.base import BackendError
 from ..common import user_cache_dir
-from ..git import common_dir, current_branch, local_branch, repository_root, resolve_commit
+from ..git import (
+    branch_worktrees,
+    common_dir,
+    ensure_local_branch,
+    git,
+    local_branch_ref,
+    repository_root,
+    resolve_commit,
+)
 
 
 SPEC_VERSION = 1
@@ -96,21 +104,50 @@ def _resolver(config):
     }
 
 
-def build_merge_spec(config, cwd, branch=None):
+def _reject_checked_out_target(cwd, target_branch, target_ref):
+    checkouts = branch_worktrees(cwd, target_ref)
+    if not checkouts:
+        return
+    paths = ', '.join(item['worktree'] for item in checkouts)
+    raise BackendError(
+        'merge destination branch {!r} is checked out in {}'.format(
+            target_branch, paths))
+
+
+def build_merge_spec(config, cwd, branch=None, create=True):
     """Capture a JSON-safe destination and resolver specification.
 
-    The destination is resolved when the parent is submitted.  Its head may
-    move later; the controller detects that and rebuilds its staging chain.
+    Committed submissions atomically create a missing destination from the
+    source HEAD captured here. Validation-only callers can pass
+    ``create=False`` to describe that hypothetical branch without mutating the
+    repository. The destination may move later; the controller detects that
+    and rebuilds its staging chain.
     """
     cwd = str(Path(cwd).expanduser().resolve())
     root = repository_root(cwd)
     common = common_dir(root)
     if branch is None:
-        branch = current_branch(cwd)
-        if not branch:
-            raise BackendError(
-                'detached HEAD requires an explicit merge destination branch')
-    target_branch, target_ref, target_head = local_branch(root, branch)
+        raise BackendError('merge destination branch must be specified')
+    source_head = resolve_commit(cwd)
+    target_branch, target_ref = local_branch_ref(root, branch)
+    _reject_checked_out_target(root, target_branch, target_ref)
+    if create:
+        target_branch, target_ref, target_head = ensure_local_branch(
+            root,
+            target_branch,
+            source_head,
+            message='taskq create merge destination',
+        )
+    else:
+        exists = git(
+            root, 'show-ref', '--verify', '--quiet', target_ref, check=False)
+        target_head = (
+            resolve_commit(root, target_ref)
+            if exists.returncode == 0 else source_head
+        )
+    # Narrow the race with a checkout that starts while a missing branch is
+    # being created. Landing repeats this invariant under taskq's ref lock.
+    _reject_checked_out_target(root, target_branch, target_ref)
     repo_state = state_root(common)
     lane = lane_key(common, target_ref)
     spec = {
@@ -119,7 +156,7 @@ def build_merge_spec(config, cwd, branch=None):
         'repo_root': root,
         'git_common_dir': common,
         'source_cwd': cwd,
-        'source_head': resolve_commit(cwd),
+        'source_head': source_head,
         'target_branch': target_branch,
         'target_ref': target_ref,
         'target_head': target_head,

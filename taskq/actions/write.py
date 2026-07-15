@@ -110,15 +110,15 @@ class RerunAction(WriteActionBase):
                     'git_root': i.get('git_root'),
                     'source_cwd': i.get('source_cwd') or i.get('cwd'),
                 })
-            merge, branch = merge_replay_options(i)
-            if merge:
+            merge_branch = merge_replay_options(i)
+            if merge_branch is not None:
                 if commit:
                     kwargs['merge'] = resolve_backend_merge_spec(
-                        self.backend, branch, cwd=merge_replay_cwd(i))
+                        self.backend, merge_branch, cwd=merge_replay_cwd(i))
                 else:
                     kwargs['merge'] = {
                         'requested': True,
-                        'target_branch': branch,
+                        'target_branch': merge_branch,
                     }
             requests.append(AddRequest(command, gpus, slots, kwargs=kwargs))
         return add_repeated(
@@ -131,7 +131,7 @@ class RerunAction(WriteActionBase):
                     depends_on,
                     request.kwargs.get('git_commit') or
                     request.kwargs.get('git_ref'),
-                    *merge_replay_options(request.kwargs),
+                    merge_replay_options(request.kwargs),
                 )
             ),
             desc='rerun',

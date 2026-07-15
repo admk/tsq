@@ -8,4 +8,3 @@ __all__ = [
     'cancel_merge_job',
     'register_merge_job',
 ]
-
