@@ -253,6 +253,7 @@ def register_merge_job(backend, meta):
     spec.update({
         'version': int(data.get('version', 1)),
         'requested': True,
+        'job_command': meta.get('command', ''),
         'repo_root': repo_root,
         'git_common_dir': git_common,
         'repository_key': repository_key(git_common),

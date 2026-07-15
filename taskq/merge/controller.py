@@ -32,6 +32,7 @@ from ..git import (
 from ..integration import (
     target_integration_lock,
 )
+from ..utils import escape_command_display
 from .state import ACTIVE_REQUEST_STATES, MergeState, TERMINAL_REQUEST_STATES
 from .cleanup import cleanup_lane_if_idle
 from .workflow import (
@@ -186,8 +187,19 @@ class MergeController:
         lane = self.state.get_lane(request['lane_id'])
         spec = request['spec']
         ref = 'refs/taskq/merge/requests/{}/change'.format(request['id'])
-        message = 'taskq merge job {}\n\nTaskq-Merge-Request: {}'.format(
-            request['parent_job_id'], request['id'])
+        command = spec.get('job_command')
+        if command is None and request_job_ownership(request) is True:
+            parent = read_json(request.get('meta_file')) or {}
+            command = parent.get('command')
+        title = (
+            escape_command_display(command)
+            if isinstance(command, str) and command else
+            'taskq merge job {}'.format(request['parent_job_id'])
+        )
+        message = (
+            '{}\n\nTaskq-Job: {}\nTaskq-Merge-Request: {}'.format(
+                title, request['parent_job_id'], request['id'])
+        )
         try:
             change, tree = synthetic_change_commit(
                 request['source_worktree'], request['source_base'], message)
@@ -693,7 +705,13 @@ class MergeController:
         except (BackendError, ValueError):
             return False
         trailer = 'Taskq-Merge-Request: {}'.format(request['id'])
-        return count == 1 and before_tree != head_tree and trailer in message
+        lines = message.rstrip().splitlines()
+        return (
+            count == 1
+            and before_tree != head_tree
+            and bool(lines)
+            and lines[-1] == trailer
+        )
 
     def _land_staged(self, lane):
         # Explore campaigns and standalone merge queues have different FIFO

@@ -201,7 +201,7 @@ def merge_harness(tmp_path, monkeypatch):
     states = []
     serial = 0
 
-    def create(change_text='from job\n'):
+    def create(change_text='from job\n', command='write job.txt'):
         nonlocal serial
         serial += 1
         root = tmp_path / 'case-{}'.format(serial)
@@ -239,7 +239,7 @@ def merge_harness(tmp_path, monkeypatch):
         meta = {
             'id': 1,
             'submission_id': submission_id,
-            'command': 'write job.txt',
+            'command': command,
             'git_root': str(repo),
             'git_worktree': str(source),
             'git_commit': base_head,
@@ -501,6 +501,58 @@ def test_controller_lands_clean_change_and_late_cancel_preserves_success(
     assert harness.request['status'] == 'landed'
     assert json.loads(Path(request['result_file']).read_text(
         encoding='utf-8'))['status'] == 'success'
+
+
+def test_merge_commit_uses_job_command_as_subject(merge_harness):
+    command = "python -c 'print(\"first\")'\nprintf second"
+    harness = merge_harness(command=command)
+    parent = json.loads(Path(harness.request['meta_file']).read_text(
+        encoding='utf-8'))
+    parent['command'] = 'forged replacement command'
+    Path(harness.request['meta_file']).write_text(
+        json.dumps(parent) + '\n', encoding='utf-8')
+
+    harness.controller.reconcile()
+
+    message = git(
+        harness.repo, 'show', '-s', '--format=%B', 'refs/heads/main')
+    assert message == (
+        "python -c 'print(\"first\")'\\nprintf second\n\n"
+        'Taskq-Job: 1\n'
+        'Taskq-Merge-Request: {}'.format(harness.request_id)
+    )
+
+
+def test_merge_commit_supports_long_command_subject(merge_harness):
+    command = 'python task.py ' + ('x' * (140 * 1024))
+    harness = merge_harness(command=command)
+
+    harness.controller.reconcile()
+
+    subject = git(
+        harness.repo, 'show', '-s', '--format=%s', 'refs/heads/main')
+    assert subject == command
+
+
+def test_resolved_change_requires_exact_final_request_trailer(merge_harness):
+    harness = merge_harness(
+        command='echo Taskq-Merge-Request: spoofed')
+    request = harness.request
+    trailer = 'Taskq-Merge-Request: {}'.format(request['id'])
+    git(harness.source, 'add', '-A')
+    git(
+        harness.source,
+        '-c', 'user.name=taskq', '-c', 'user.email=taskq@localhost',
+        'commit', '--no-gpg-sign', '--no-verify',
+        '-m', 'echo {}'.format(trailer),
+    )
+
+    assert not MergeController._valid_resolved_change(
+        harness.source,
+        harness.base_head,
+        git(harness.source, 'rev-parse', 'HEAD'),
+        request,
+    )
 
 
 def test_controller_cleanly_cherry_picks_tracked_edit_with_signing_enabled(
@@ -849,6 +901,9 @@ def test_fifo_conflict_runs_one_inherited_environment_resolver_then_lands(
     assert len(harness.backend.add_calls) == 1
     assert git(harness.repo, 'show', 'main:tracked.txt') == 'first and second resolved'
     assert git(harness.repo, 'rev-parse', 'refs/heads/main') == second['staged_head']
+    assert git(
+        harness.repo, 'show', '-s', '--format=%s', 'refs/heads/main',
+    ) == 'edit tracked.txt'
 
 
 def test_resolved_delta_replays_after_target_moves_without_second_resolver(

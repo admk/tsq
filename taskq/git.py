@@ -267,7 +267,8 @@ def synthetic_change_commit(cwd, source_base, message):
     commit = git(
         cwd,
         '-c', 'user.name=taskq', '-c', 'user.email=taskq@localhost',
-        'commit-tree', result_tree, '-p', source_base, '-m', message,
+        'commit-tree', result_tree, '-p', source_base, '-F', '-',
+        input_text=message,
     )
     return commit, result_tree
 

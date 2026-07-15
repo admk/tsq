@@ -171,6 +171,30 @@ def test_add_ref_rejected_by_unsupported_backend(fake_backend, rc_file, capsys):
     ]
 
 
+def test_add_short_ref_and_merge_aliases(
+    fake_backend, rc_file, monkeypatch, capsys
+):
+    enable_fake_merge(monkeypatch, fake_backend)
+
+    _, out = run_cli(
+        ['add', '-r', 'feature', '-m', 'main', 'echo', 'hi'],
+        rc_file,
+        capsys,
+    )
+
+    backend = fake_backend.instances[-1]
+    assert ('resolve_merge_spec', 'main') in backend.calls
+    add_call = [call for call in backend.calls if call[0] == 'add'][-1]
+    assert add_call[-1] == {
+        'git_ref': 'feature',
+        'git_commit': 'commit-for-feature',
+        'git_root': '/repo',
+        'source_cwd': os.getcwd(),
+        'merge': {'requested': True, 'target_branch': 'main'},
+    }
+    assert out.strip() == 'Added: 100'
+
+
 def test_add_merge_implies_head_and_resolves_target(
     fake_backend, rc_file, monkeypatch, capsys
 ):
@@ -289,7 +313,7 @@ def test_add_merge_validation(fake_backend, rc_file, monkeypatch, capsys):
         CLI().main(['-rc', str(rc_file), 'add', '--merge'])
     captured = capsys.readouterr()
     assert exc.value.code == 2
-    assert 'argument --merge: expected one argument' in captured.err
+    assert 'argument -m/--merge: expected one argument' in captured.err
 
     monkeypatch.setattr(fake_backend, 'supports_git_merge', True)
     code = CLI().main([
@@ -446,11 +470,15 @@ def test_list_info_ids_commands_outputs_export(fake_backend, rc_file, capsys):
     assert 'python train.py' in out
 
 
-def test_commands_escapes_control_characters(fake_backend, rc_file, capsys):
+def test_info_and_commands_escape_control_characters_consistently(
+    fake_backend, rc_file, capsys
+):
     fake_backend.jobs[0]['command'] = "echo 'a\nb'"
 
-    _, out = run_cli(['commands', '1'], rc_file, capsys)
+    _, out = run_cli(['info', '1'], rc_file, capsys)
+    assert "  command: echo 'a\\nb'\n" in out
 
+    _, out = run_cli(['commands', '1'], rc_file, capsys)
     assert out == "1: echo 'a\\nb'\n"
 
 

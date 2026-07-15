@@ -42,14 +42,14 @@ class AddAction(DryActionBase):
                 'Only start after these job IDs complete successfully. '
                 'Accepts comma-separated IDs and ranges, e.g. "1-3,5".'),
         },
-        ('--ref', ): {
+        ('-r', '--ref'): {
             'type': str,
             'default': None,
             'help': (
                 'Run the job from this git branch, tag, or commit. '
                 'The ref is resolved to an exact commit when queued.'),
         },
-        ('--merge', ): {
+        ('-m', '--merge'): {
             'type': str,
             'default': None,
             'metavar': 'BRANCH',

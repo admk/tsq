@@ -196,6 +196,8 @@ class InfoAction(ReadActionBase):
             for k, v in i.items():
                 if k == 'id':
                     continue
+                if k == 'command':
+                    v = escape_command_display(v)
                 outputs.append(f'  {k}: {v}')
                 if k == 'status':
                     outputs.append(f'  exit_code: {exit_code}')
