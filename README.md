@@ -490,6 +490,8 @@ are `id`, `status`, `slots`, `gpus`, `gpu_ids`, `enqueue`,
 
 ### Explore
 
+`tq x` is shorthand for `tq explore`, including all Explore subcommands.
+
 | Command | Purpose |
 | --- | --- |
 | `tq explore init [PROFILE]` | Create, edit, or resume a project exploration profile. |

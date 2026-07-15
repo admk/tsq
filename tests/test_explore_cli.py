@@ -105,6 +105,7 @@ def workflow_env(monkeypatch, tmp_path, repo):
 def test_explore_action_is_registered_and_help_lists_subcommands(capsys):
     assert 'explore' in INFO['actions']
     assert INFO['aliases']['explore'] == 'explore'
+    assert INFO['aliases']['x'] == 'explore'
 
     with pytest.raises(SystemExit) as error:
         CLI().main(['explore', '--help'])
@@ -193,7 +194,7 @@ def test_explore_start_uses_profile_config(
     monkeypatch.setattr(explore_action, 'repository_root', lambda cwd: tmp_path)
     monkeypatch.setattr(explore_action, 'ensure_local_exclude', lambda root: None)
 
-    CLI().main(['-rc', str(rc), 'explore', 'start', 'latency'])
+    CLI().main(['-rc', str(rc), 'x', 'start', 'latency'])
 
     assert calls[0][0] == 'reduce latency'
     assert calls[0][1]['profile_name'] == 'latency'

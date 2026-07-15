@@ -14,7 +14,8 @@ from ..explore.wizard import (
 from ..explore.workflow import ExploreWorkflow
 
 
-@register_action('explore', 'run autonomous optimization campaigns')
+@register_action(
+    'explore', 'run autonomous optimization campaigns', aliases=['x'])
 class ExploreAction(ActionBase):
     options = {
         ('explore_action',): {
