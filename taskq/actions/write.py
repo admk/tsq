@@ -8,7 +8,10 @@ from .repeat import (
     AddRequest,
     add_repeated,
     dry_add_command,
+    merge_replay_cwd,
+    merge_replay_options,
     repeat_options,
+    resolve_backend_merge_spec,
     validate_repeat_count,
 )
 
@@ -34,7 +37,9 @@ class KillAction(WriteActionBase):
 
     def main(self, args):
         info = self.backend.job_info(self.ids, self.filters)
-        info = [i for i in info if i['status'] == 'running']
+        info = [
+            i for i in info if i['status'] in {'running', 'merging'}
+        ]
         if not info:
             print('No job to kill.')
             return
@@ -105,6 +110,16 @@ class RerunAction(WriteActionBase):
                     'git_root': i.get('git_root'),
                     'source_cwd': i.get('source_cwd') or i.get('cwd'),
                 })
+            merge, branch = merge_replay_options(i)
+            if merge:
+                if commit:
+                    kwargs['merge'] = resolve_backend_merge_spec(
+                        self.backend, branch, cwd=merge_replay_cwd(i))
+                else:
+                    kwargs['merge'] = {
+                        'requested': True,
+                        'target_branch': branch,
+                    }
             requests.append(AddRequest(command, gpus, slots, kwargs=kwargs))
         return add_repeated(
             self.backend, requests, repeat, commit=commit,
@@ -114,7 +129,9 @@ class RerunAction(WriteActionBase):
                     request.gpus,
                     request.slots,
                     depends_on,
+                    request.kwargs.get('git_commit') or
                     request.kwargs.get('git_ref'),
+                    *merge_replay_options(request.kwargs),
                 )
             ),
             desc='rerun',

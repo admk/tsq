@@ -96,6 +96,8 @@ jobs can be queued from a specific git branch, tag, or commit:
 ```sh
 tq add --ref main pytest
 tq add --ref HEAD~1 sh -c 'make build && make test'
+tq add --merge project1 codex exec 'implement the requested change'
+tq add --merge main --ref feature sh -c 'generate-code && test'
 ```
 
 The ref is resolved to an exact commit when the job is queued.
@@ -106,7 +108,23 @@ and the original captured environment,
 even if the branch has moved since the original job was added.
 Worktrees remain inspectable until the job is removed
 or the backend is reset.
-Merging changes back is manual.
+Without `--merge`, merging changes back is manual.
+
+`--merge BRANCH` makes landing into an explicit destination branch part of the
+job lifecycle. If `--ref` is omitted, taskq pins `HEAD` when the job is queued.
+If the destination branch does not exist, taskq creates it from that same
+captured `HEAD`. The destination must not be checked out as `HEAD`; taskq rejects
+the job instead of moving an active checkout unexpectedly. After a command exits
+successfully, taskq records its final tree delta as one change, integrates ready
+changes through a per-repository/branch FIFO, and marks the parent job successful
+only after the destination branch contains that change. A failed command is
+never merged.
+
+FIFO integration happens in a taskq-owned staging worktree. If the destination
+branch is checked out after the job is queued, taskq does not advance it.
+Otherwise, the destination is advanced atomically without changing any active
+checkout. Conflicts run the configured `[merge]` resolver once in the staging
+worktree. Use `tq info ID` or follow the parent output to inspect merge progress.
 
 ## Autonomous Exploration
 
@@ -371,6 +389,7 @@ accept an optional job selector and status filters.
 | `-A`, `--all` | Select all jobs explicitly. Useful for dangerous actions. | `tq remove --all` |
 | `-r`, `--running` | Filter running jobs. | `tq list --running` |
 | `-q`, `--queued` | Filter queued jobs. | `tq list --queued` |
+| `--merging` | Filter jobs waiting for staged changes to land. | `tq list --merging` |
 | `-s`, `--success` | Filter successful jobs. | `tq remove --success` |
 | `-f`, `--failed` | Filter failed jobs. | `tq info --failed` |
 | `-k`, `--killed` | Filter killed jobs. | `tq list --killed` |
@@ -395,6 +414,8 @@ to avoid accidental bulk changes.
 | `tq add -f -` | Read commands from stdin. |
 | `tq add -d CMD...` | Dry run; print resolved `tq add` command lines without queueing. |
 | `tq add -s SEP CMD...` | Use `SEP` (defaults to `,`) when expanding stdin fields into `@1`, `@2`, etc. |
+| `tq add --merge BRANCH CMD...` | Run from captured `HEAD`, then stage and FIFO-land the resulting change into `BRANCH`; create it from that captured `HEAD` if needed. |
+| `tq add --merge BRANCH --ref REF CMD...` | Run from an explicit source ref and FIFO-land only the command-produced delta into `BRANCH`. |
 
 Expansion helpers:
 
@@ -485,6 +506,7 @@ are `id`, `status`, `slots`, `gpus`, `gpu_ids`, `enqueue`,
 | --- | --- |
 | `queued` | Waiting for slots or GPU allocation. |
 | `running` | Started and currently running. |
+| `merging` | Command succeeded; its staged change is resolving or waiting to land. The job holds no slots or GPUs. |
 | `success` | Finished with exit code `0`. |
 | `failed` | Finished with a non-zero exit code or failed to start. |
 | `killed` | Killed through `tq kill` or backend equivalent. |

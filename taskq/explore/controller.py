@@ -12,6 +12,7 @@ from pathlib import Path
 from ..backends import git_ref as git_ref_utils
 from ..backends.base import BackendError
 from ..backends.tmux.backend import TmuxBackend
+from ..integration import fast_forward_checked_out, target_integration_lock
 from .agent import (
     AgentResponseError,
     build_optimizer_prompt,
@@ -821,27 +822,29 @@ class ExploreController:
         self._land_target()
 
     def _land_target(self):
+        root = self.config['repo_root']
+        target = self.campaign['target_ref']
         try:
-            require_clean(self.config['repo_root'])
+            with target_integration_lock(root, target):
+                self._land_target_locked(root, target)
         except BackendError as error:
             self._manual_landing(str(error))
-            return
-        root = self.config['repo_root']
+
+    def _land_target_locked(self, root, target):
+        require_clean(root)
         branch = git(root, 'symbolic-ref', '--short', 'HEAD')
-        if branch != self.campaign['target_ref']:
-            self._manual_landing(
-                'target branch {} is not checked out'.format(
-                    self.campaign['target_ref']))
-            return
+        if branch != target:
+            raise BackendError(
+                'target branch {} is not checked out'.format(target))
         target_head = git(root, 'rev-parse', 'HEAD')
         mainline = self.config['mainline_branch']
         if self._is_ancestor(root, mainline, target_head):
             self._complete_landing(target_head)
             return
         if not self._is_ancestor(root, target_head, mainline):
-            self._manual_landing('target and campaign mainline have diverged')
-            return
-        self._complete_landing(merge_ff(root, mainline))
+            raise BackendError('target and campaign mainline have diverged')
+        self._complete_landing(
+            fast_forward_checked_out(root, target_head, mainline))
 
     def _manual_landing(self, reason):
         root = self.config['repo_root']

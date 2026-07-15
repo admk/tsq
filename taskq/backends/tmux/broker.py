@@ -8,6 +8,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import lifecycle
+
 
 def now():
     return datetime.datetime.now().isoformat()
@@ -57,12 +59,7 @@ def controller_paths(args):
 
 
 def write_controller(meta, path):
-    tmp = path.with_suffix('.json.tmp')
-    tmp.write_text(
-        json.dumps(meta, indent=2, sort_keys=True) + '\n',
-        encoding='utf-8',
-    )
-    os.replace(tmp, path)
+    lifecycle.atomic_json(path, meta)
 
 
 def guard_controllers(args):
@@ -229,7 +226,7 @@ def read_meta(path):
 
 
 def write_meta(meta, path):
-    tmp = path.with_suffix('.json.tmp')
+    tmp = path.with_name('.{}.{}.tmp'.format(path.name, os.getpid()))
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(meta, f, indent=2, sort_keys=True)
         f.write('\n')
@@ -250,10 +247,26 @@ def all_meta(args):
 
 
 def refresh_running(args, path, meta):
+    if meta.get('status') == 'merging':
+        if lifecycle.refresh_merge(meta, now()):
+            write_meta(meta, path)
+        return meta
     if meta.get('status') != 'running':
         return meta
     session = meta.get('session')
     if session and session_exists(args, session):
+        command_result = lifecycle.command_result(meta)
+        if command_result is not None:
+            lifecycle.finish_command(
+                meta,
+                command_result['exitcode'],
+                command_result.get('end_time') or now(),
+            )
+            if meta.get('status') == 'merging':
+                lifecycle.refresh_merge(meta, now())
+            write_meta(meta, path)
+            tmux(args, 'kill-session', '-t', session, check=False)
+            return meta
         exitcode = finished_exitcode(meta)
         if exitcode is not None:
             meta.update({
@@ -274,6 +287,20 @@ def refresh_running(args, path, meta):
     except OSError:
         return meta
     if meta.get('status') != 'running':
+        if meta.get('status') == 'merging':
+            if lifecycle.refresh_merge(meta, now()):
+                write_meta(meta, path)
+        return meta
+    command_result = lifecycle.command_result(meta)
+    if command_result is not None:
+        lifecycle.finish_command(
+            meta,
+            command_result['exitcode'],
+            command_result.get('end_time') or now(),
+        )
+        if meta.get('status') == 'merging':
+            lifecycle.refresh_merge(meta, now())
+        write_meta(meta, path)
         return meta
     exitcode = finished_exitcode(meta)
     if exitcode is not None:
@@ -294,6 +321,10 @@ def refresh_running(args, path, meta):
 
 
 def finished_exitcode(meta):
+    # Merge commands hand off exclusively through command-result.json.  Do
+    # not let command output spoof the legacy wrapper completion marker.
+    if isinstance(meta.get('merge'), dict):
+        return None
     output_file = meta.get('output_file')
     if not output_file:
         return None

@@ -15,6 +15,15 @@ def test_default_config_exposes_tmux_and_ts():
     assert 'state_dir' not in config['backends']['tmux']
 
 
+def test_default_config_exposes_shared_merge_resolver():
+    config = tomlkit.loads(
+        Path('taskq/default.toml').read_text(encoding='utf-8'))
+
+    assert config['merge']['command'].count('{}') == 1
+    assert config['merge']['timeout'] == 30 * 60
+    assert config['merge']['conflict_prompt'] == 'merge-conflict.md'
+
+
 def test_default_config_exposes_explore_phases():
     config = tomlkit.loads(
         Path('taskq/default.toml').read_text(encoding='utf-8'))
@@ -27,7 +36,7 @@ def test_default_config_exposes_explore_phases():
     }
     assert set(explore['initialization']) == {
         'command', 'timeout', 'prompt', 'repair_prompt'}
-    assert explore['initialization']['timeout'] == 0
+    assert explore['initialization']['timeout'] == 600
     assert explore['command'].count('{}') == 1
     assert explore['timeout'] == 30 * 60
     assert explore['env'] == {}
@@ -55,6 +64,8 @@ def test_load_config_uses_packaged_defaults_without_local_rc(tmp_path, monkeypat
     config = CLI()._load_config(args)
 
     assert config['alloc']['gpus'] == 0
+    assert config['merge']['conflict_prompt'].startswith(
+        'Resolve the in-progress Git integration')
     assert config['explore']['planning']['prompt'].startswith('Plan ')
     assert config['explore']['planning']['prompt'] != 'planning.md'
     assert config['explore']['initialization']['prompt'].startswith(

@@ -33,6 +33,15 @@ gpus = 0
 # Queue slots required per job.
 slots = 1
 
+# Shared Git-integration conflict resolver. `tq add --merge` uses these
+# settings directly; `tq explore` may override them for its merge phase.
+[merge]
+# Agent argv. Exactly one standalone `{}` item is replaced with the prompt.
+command = ["codex", "exec", "--ephemeral", "{}"]
+# Maximum runtime in seconds for one conflict-resolution job.
+timeout = 1800
+conflict_prompt = "merge-conflict.md"
+
 # Autonomous optimization campaigns. `tq explore` is supported only by the
 # tmux backend. Every `max_*` setting accepts 0 to disable that cap.
 [explore]
@@ -52,7 +61,7 @@ response_repair_prompt = "response-repair.md"
 # Interactive setup agent queued as a tq job when creating a profile.
 command = ["codex", "exec", "--ephemeral", "--config", "model_reasoning_effort=medium", "--sandbox", "workspace-write", "{}"]
 # Maximum runtime in seconds; set to 0 for no limit.
-timeout = 0
+timeout = 600
 prompt = "initialization.md"
 repair_prompt = "initialization-repair.md"
 

@@ -7,6 +7,7 @@ from typing import Mapping, Type
 
 class BackendBase:
     supports_git_ref = False
+    supports_git_merge = False
 
     def __init__(self, name, config):
         super().__init__()
@@ -81,7 +82,8 @@ class BackendBase:
 
     @abstractmethod
     def add(
-        self, command, gpus=None, slots=None, depends_on=None, **kwargs
+        self, command, gpus=None, slots=None, depends_on=None, merge=None,
+        **kwargs,
     ):
         raise NotImplementedError
 

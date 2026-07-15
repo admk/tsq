@@ -1,6 +1,7 @@
 import argparse
 import io
 import json
+import os
 import sys
 
 import pytest
@@ -15,6 +16,30 @@ def run_cli(args, rc_file, capsys):
     code = CLI().main(['-rc', str(rc_file), *args])
     out = capsys.readouterr().out
     return code, out
+
+
+def enable_fake_merge(monkeypatch, fake_backend):
+    monkeypatch.setattr(fake_backend, 'supports_git_ref', True)
+    monkeypatch.setattr(fake_backend, 'supports_git_merge', True)
+    monkeypatch.setattr(
+        fake_backend,
+        'resolve_git_ref',
+        lambda self, ref: ('/repo', f'commit-for-{ref}'),
+        raising=False,
+    )
+
+    def resolve_merge_spec(self, branch, cwd=None):
+        call = ('resolve_merge_spec', branch)
+        if cwd is not None:
+            call += (cwd,)
+        self.calls.append(call)
+        return {
+            'requested': True,
+            'target_branch': branch or 'main',
+        }
+
+    monkeypatch.setattr(
+        fake_backend, 'resolve_merge_spec', resolve_merge_spec, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -143,6 +168,70 @@ def test_add_ref_rejected_by_unsupported_backend(fake_backend, rc_file, capsys):
     ]
 
 
+def test_add_merge_implies_head_and_resolves_target(
+    fake_backend, rc_file, monkeypatch, capsys
+):
+    enable_fake_merge(monkeypatch, fake_backend)
+
+    _, out = run_cli(
+        ['add', '--merge', '--branch', 'main', 'echo', 'hi'],
+        rc_file,
+        capsys,
+    )
+
+    backend = fake_backend.instances[-1]
+    assert ('resolve_merge_spec', 'main') in backend.calls
+    add_call = [call for call in backend.calls if call[0] == 'add'][-1]
+    assert add_call[:4] == ('add', 'echo hi', None, None)
+    assert add_call[-1] == {
+        'git_ref': 'HEAD',
+        'git_commit': 'commit-for-HEAD',
+        'git_root': '/repo',
+        'source_cwd': os.getcwd(),
+        'merge': {'requested': True, 'target_branch': 'main'},
+    }
+    assert out.strip() == 'Added: 100'
+
+
+def test_add_merge_validation(fake_backend, rc_file, monkeypatch, capsys):
+    code = CLI().main([
+        '-rc', str(rc_file), 'add', '--merge', 'echo', 'hi',
+    ])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "backend 'fake' does not support --merge" in captured.err
+
+    code = CLI().main([
+        '-rc', str(rc_file), 'add', '--branch', 'main', 'echo', 'hi',
+    ])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert '--branch requires --merge' in captured.err
+
+    monkeypatch.setattr(fake_backend, 'supports_git_ref', True)
+    monkeypatch.setattr(fake_backend, 'supports_git_merge', True)
+    code = CLI().main([
+        '-rc', str(rc_file), 'add', '--merge', 'echo', 'hi',
+    ])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert 'advertises --merge support' in captured.err
+
+
+def test_add_merge_dry_run_renders_merge_options(
+    fake_backend, rc_file, monkeypatch, capsys
+):
+    enable_fake_merge(monkeypatch, fake_backend)
+
+    _, out = run_cli([
+        'add', '-d', '--merge', '--branch', 'main', 'echo', 'hi',
+    ], rc_file, capsys)
+
+    assert out.strip() == (
+        f'{TOOL_NAME} add --ref HEAD --merge --branch main -N 1 echo hi'
+    )
+
+
 def test_add_repeat_chains_same_command(fake_backend, rc_file, capsys):
     _, out = run_cli(['add', '-R', '3', 'echo', 'hi'], rc_file, capsys)
 
@@ -212,7 +301,8 @@ def test_filter_parse_ids_and_statuses():
     action = FilterActionBase('x', {'name': 'x'})
     args = argparse.Namespace(
         id='1-3,5', all=False, running=True, queued=False,
-        success=False, failed=False, killed=False, interrupted=True,
+        merging=False, success=False, failed=False, killed=False,
+        interrupted=True,
     )
     action.transform_args(args)
     assert action.ids == [1, 2, 3, 5]
@@ -302,6 +392,24 @@ def test_commands_add_command_prints_replayable_add(
     )
 
 
+def test_commands_add_command_preserves_merge_target(
+    fake_backend, rc_file, capsys
+):
+    fake_backend.jobs[0]['git_commit'] = 'abc123'
+    fake_backend.jobs[0]['merge'] = {
+        'requested': True,
+        'target_branch': 'main',
+        'stage': 'staged',
+    }
+
+    _, out = run_cli(['commands', '-a', '-j', '1'], rc_file, capsys)
+
+    assert out == (
+        f'{TOOL_NAME} add --ref abc123 --merge --branch main '
+        '-G 1 -N 2 python train.py\n'
+    )
+
+
 def test_outputs_follow_requires_single_job(
     fake_backend, rc_file, tmp_path, capsys
 ):
@@ -337,9 +445,11 @@ def test_interact_action_requires_single_job(fake_backend, rc_file, capsys):
 
 def test_wait_exits_when_jobs_finish(fake_backend, rc_file, monkeypatch, capsys):
     calls = {'count': 0}
+    filters_seen = []
 
     def fake_job_info(self, ids=None, filters=None):
         calls['count'] += 1
+        filters_seen.append(filters)
         if calls['count'] == 1:
             return [{'id': 1, 'status': 'running'}]
         return []
@@ -348,6 +458,44 @@ def test_wait_exits_when_jobs_finish(fake_backend, rc_file, monkeypatch, capsys)
     monkeypatch.setattr('taskq.actions.read.time.sleep', lambda _: None)
     run_cli(['wait'], rc_file, capsys)
     assert calls['count'] >= 2
+    assert all(f.merging for f in filters_seen)
+
+
+def test_merging_status_is_filterable_and_killable(
+    fake_backend, rc_file, capsys
+):
+    fake_backend.jobs[1]['status'] = 'merging'
+
+    _, out = run_cli(['ids', '--merging'], rc_file, capsys)
+    assert out.strip() == '2'
+
+    _, out = run_cli(['list', '--merging'], rc_file, capsys)
+    assert 'merging' in out
+    assert 'echo queued' in out
+
+    _, out = run_cli(['kill', '--merging'], rc_file, capsys)
+    assert out.strip() == 'Killed: 2'
+    assert ('kill', 2, True) in fake_backend.instances[-1].calls
+
+
+def test_output_follow_waits_through_merging(
+    fake_backend, rc_file, tmp_path, monkeypatch, capsys
+):
+    output_file = tmp_path / 'out-1.log'
+    output_file.write_text('command output\n', encoding='utf-8')
+    fake_backend.jobs[0]['status'] = 'merging'
+    fake_backend.jobs[0]['output_file'] = str(output_file)
+    statuses = iter(['merging', 'success'])
+
+    def fake_job_info(self, ids=None, filters=None):
+        return [{'id': 1, 'status': next(statuses)}]
+
+    monkeypatch.setattr(fake_backend, 'job_info', fake_job_info)
+    monkeypatch.setattr('taskq.actions.read.time.sleep', lambda _: None)
+
+    _, out = run_cli(['outputs', '--follow', '1'], rc_file, capsys)
+
+    assert out == 'command output\n'
 
 
 def test_write_actions_and_danger_guard(fake_backend, rc_file, capsys):
@@ -390,6 +538,71 @@ def test_rerun_repeat_chains_same_command(fake_backend, rc_file, capsys):
         ('add', 'python train.py', 1, 2, ['100']),
         ('add', 'python train.py', 1, 2, ['101']),
     ]
+
+
+def test_rerun_preserves_merge_target(
+    fake_backend, rc_file, monkeypatch, capsys, tmp_path
+):
+    enable_fake_merge(monkeypatch, fake_backend)
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    fake_backend.jobs[0]['git_ref'] = 'topic'
+    fake_backend.jobs[0]['git_commit'] = 'abc123'
+    fake_backend.jobs[0]['git_root'] = '/repo'
+    fake_backend.jobs[0]['source_cwd'] = '/repo/subdir'
+    fake_backend.jobs[0]['merge'] = {
+        'requested': True,
+        'target_branch': 'main',
+        'stage': 'landed',
+    }
+
+    _, out = run_cli(['rerun', '1'], rc_file, capsys)
+
+    backend = fake_backend.instances[-1]
+    assert ('resolve_merge_spec', 'main', '/repo') in backend.calls
+    add_call = [call for call in backend.calls if call[0] == 'add'][-1]
+    assert add_call[-1]['merge'] == {
+        'requested': True,
+        'target_branch': 'main',
+    }
+    assert add_call[-1]['git_commit'] == 'abc123'
+    assert out.strip() == 'Reran: 1 -> 100'
+
+    _, out = run_cli(['rerun', '-d', '1'], rc_file, capsys)
+    assert (
+        f'{TOOL_NAME} add --ref abc123 --merge --branch main '
+        '-G 1 -N 2 python train.py'
+    ) in out
+
+
+def test_requeue_resolves_merge_from_original_repo_when_called_elsewhere(
+    fake_backend, rc_file, monkeypatch, capsys, tmp_path
+):
+    enable_fake_merge(monkeypatch, fake_backend)
+    fake_backend.jobs[0].update({
+        'git_ref': 'topic',
+        'git_commit': 'abc123',
+        'git_root': '/original/repo',
+        'source_cwd': '/original/repo/subdir',
+        'merge': {
+            'requested': True,
+            'target_branch': 'main',
+            'stage': 'staged',
+        },
+    })
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+    _, out = run_cli(['requeue', '1'], rc_file, capsys)
+
+    backend = fake_backend.instances[-1]
+    assert ('resolve_merge_spec', 'main', '/original/repo') in backend.calls
+    add_call = [call for call in backend.calls if call[0] == 'add'][-1]
+    assert add_call[-1]['merge']['target_branch'] == 'main'
+    assert ('remove', 1, True) in backend.calls
+    assert out.strip() == 'Requeued: 1 -> 100'
 
 
 def test_rerun_repeat_no_chain(fake_backend, rc_file, capsys):

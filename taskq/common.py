@@ -12,7 +12,11 @@ def tqdm(*args, disable=None, **kwargs):
     return tqdm_(*args, **kwargs, delay=1, disable=disable)
 
 
-STATUSES = ['running', 'queued', 'success', 'failed', 'killed', 'interrupted']
+STATUSES = [
+    'running', 'queued', 'merging',
+    'success', 'failed', 'killed', 'interrupted',
+]
+ACTIVE_STATUSES = frozenset({'queued', 'running', 'merging'})
 
 
 def xdg_config_home(environ=None):
@@ -52,6 +56,7 @@ class FilterArgs:
     force_all: bool = False
     running: bool = False
     queued: bool = False
+    merging: bool = False
     success: bool = False
     failed: bool = False
     killed: bool = False

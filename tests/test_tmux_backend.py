@@ -1,5 +1,6 @@
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -255,6 +256,7 @@ def test_tmux_add_queues_job_and_ensures_broker(tmux_backend):
     job_id = tmux_backend.add('echo hi', gpus=1, slots=2, depends_on=[3, 4])
     meta = read_meta(tmux_backend, int(job_id))
     assert meta['status'] == 'queued'
+    assert len(meta['submission_id']) == 32
     assert meta['argv'] == ['echo', 'hi']
     assert meta['gpus_required'] == 1
     assert meta['slots_required'] == 2
@@ -275,6 +277,16 @@ def test_tmux_add_queues_job_and_ensures_broker(tmux_backend):
     assert 'while [ "$i" -lt 100 ]; do' in wrapper
     assert meta['start_file'].endswith('/start')
     assert tmux_backend.broker_session in tmux_backend.sessions
+
+
+def test_tmux_environment_encoding_can_explicitly_unset_server_values():
+    encoded = TmuxBackend._encode_env({
+        'KEEP_ME': 'value with spaces',
+        'DROP_ME': None,
+    })
+
+    assert "export KEEP_ME='value with spaces'" in encoded
+    assert 'unset DROP_ME' in encoded
 
 
 def test_tmux_add_captures_enqueue_environment(monkeypatch, tmux_backend):
@@ -366,6 +378,8 @@ def test_tmux_rerun_reuses_original_enqueue_environment(
     assert 'export HELLO=original' in wrapper
     assert 'export HELLO=current' not in wrapper
     assert env['HELLO'] == 'original'
+    assert read_meta(tmux_backend, new_id)['submission_id'] != read_meta(
+        tmux_backend, job_id)['submission_id']
 
 
 def test_tmux_add_ref_creates_detached_worktree(
@@ -410,6 +424,233 @@ def test_tmux_add_ref_preserves_relative_cwd(
     meta = read_meta(tmux_backend, job_id)
     assert meta['source_cwd'] == str(subdir)
     assert meta['cwd'] == str(tmux_backend._job_dir(job_id) / 'worktree' / 'subdir')
+
+
+def test_tmux_add_merge_persists_handoff_and_registers_controller(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    _, commit = init_git_repo(repo)
+    monkeypatch.chdir(repo)
+    registered = []
+    monkeypatch.setattr(
+        tmux_backend,
+        '_register_merge',
+        lambda meta: registered.append(meta.copy()),
+    )
+    spec = {
+        'requested': True,
+        'target_branch': 'main',
+        'git_root': str(repo),
+    }
+
+    job_id = int(tmux_backend.add(
+        'printf changed > result.txt',
+        gpus=0,
+        slots=1,
+        git_ref='HEAD',
+        merge=spec,
+    ))
+
+    meta = read_meta(tmux_backend, job_id)
+    merge = meta['merge']
+    assert merge['requested'] is True
+    assert merge['submission_id'] == meta['submission_id']
+    assert merge['target_branch'] == 'main'
+    assert merge['source_base'] == commit
+    assert merge['source_worktree'] == meta['git_worktree']
+    assert merge['job_dir'] == str(tmux_backend._job_dir(job_id))
+    assert merge['command_result_file'] == meta['command_result_file']
+    assert merge['status_file'] == meta['merge_status_file']
+    assert merge['result_file'] == meta['merge_result_file']
+    assert registered[0]['merge'] == merge
+    wrapper = Path(meta['wrapper']).read_text(encoding='utf-8')
+    assert 'merge_enabled=1' in wrapper
+    assert str(tmux_backend._job_dir(job_id) / 'command-result.json') in wrapper
+    assert tmux_backend.full_info([job_id])[0]['merge'] == merge
+
+
+def test_tmux_resolve_merge_spec_accepts_original_repo_context(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    init_git_repo(repo)
+    branch = git(repo, 'symbolic-ref', '--short', 'HEAD')
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+    spec = tmux_backend.resolve_merge_spec(branch, cwd=repo)
+
+    assert spec['repo_root'] == str(repo)
+    assert spec['target_branch'] == branch
+
+
+def test_tmux_merge_lifecycle_fails_closed_when_cancel_is_unconfirmed(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    init_git_repo(repo)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(tmux_backend, '_register_merge', lambda meta: None)
+    job_id = int(tmux_backend.add(
+        'true', gpus=0, slots=1, git_ref='HEAD',
+        merge={
+            'requested': True,
+            'target_branch': 'main',
+            'git_root': str(repo),
+        },
+    ))
+    meta = read_meta(tmux_backend, job_id)
+    meta['status'] = 'merging'
+    tmux_backend._write_meta(meta)
+    tmux_backend.sessions.add(meta['session'])
+    monkeypatch.setattr(
+        'taskq.merge.workflow.cancel_merge_job',
+        lambda current, remove=False: None,
+    )
+
+    with pytest.raises(BackendError, match='could not confirm'):
+        tmux_backend.kill({'id': job_id})
+    with pytest.raises(BackendError, match='could not confirm'):
+        tmux_backend.remove({'id': job_id})
+    with pytest.raises(BackendError, match='could not confirm'):
+        tmux_backend.backend_reset(None)
+
+    assert read_meta(tmux_backend, job_id)['status'] == 'merging'
+    assert meta['session'] in tmux_backend.sessions
+    assert Path(meta['git_worktree']).exists()
+
+
+def test_tmux_merge_refresh_kill_preserves_and_remove_cleans_worktree(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    init_git_repo(repo)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(tmux_backend, '_register_merge', lambda meta: None)
+    job_id = int(tmux_backend.add(
+        'true',
+        gpus=0,
+        slots=1,
+        git_ref='HEAD',
+        merge={
+            'requested': True,
+            'target_branch': 'main',
+            'git_root': str(repo),
+        },
+    ))
+    meta = read_meta(tmux_backend, job_id)
+    worktree = Path(meta['git_worktree'])
+    meta.update({'status': 'running', 'start_time': '2024-01-01T00:00:00'})
+    tmux_backend._write_meta(meta)
+    tmux_backend.sessions.add(meta['session'])
+    Path(meta['command_result_file']).write_text(json.dumps({
+        'exitcode': 0,
+        'end_time': '2024-01-01T00:00:01',
+        'submission_id': meta['submission_id'],
+    }), encoding='utf-8')
+
+    info = tmux_backend.full_info([job_id])[0]
+
+    assert info['status'] == 'merging'
+    assert info['command_exitcode'] == 0
+    assert info.get('exitcode') is None
+    assert info['merge']['stage'] == 'queued'
+    Path(meta['merge_status_file']).write_text(json.dumps({
+        'merge': {
+            'stage': 'staged',
+            'sequence': 2,
+            'submission_id': meta['submission_id'],
+        },
+    }), encoding='utf-8')
+    info = tmux_backend.full_info([job_id])[0]
+    assert info['status'] == 'merging'
+    assert info['merge']['stage'] == 'staged'
+
+    cancelled = []
+    monkeypatch.setattr(
+        tmux_backend,
+        '_cancel_merge',
+        lambda current, remove=False, required=False: (
+            cancelled.append((current['id'], remove))
+            or {'status': 'cancelled'}
+        ),
+    )
+    tmux_backend.kill({'id': job_id})
+
+    assert cancelled == [(job_id, False)]
+    assert read_meta(tmux_backend, job_id)['status'] == 'killed'
+    assert worktree.exists()
+
+    tmux_backend.remove({'id': job_id})
+
+    assert cancelled == [(job_id, False), (job_id, True)]
+    assert not worktree.exists()
+
+
+def test_tmux_merge_kill_does_not_overwrite_completed_landing(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    init_git_repo(repo)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(tmux_backend, '_register_merge', lambda meta: None)
+    job_id = int(tmux_backend.add(
+        'true', gpus=0, slots=1, git_ref='HEAD',
+        merge={
+            'requested': True,
+            'target_branch': 'main',
+            'git_root': str(repo),
+        },
+    ))
+    meta = read_meta(tmux_backend, job_id)
+    meta['status'] = 'merging'
+    tmux_backend._write_meta(meta)
+    monkeypatch.setattr(
+        tmux_backend,
+        '_cancel_merge',
+        lambda current, remove=False, required=False: {'status': 'landed'},
+    )
+
+    tmux_backend.kill({'id': job_id})
+
+    meta = read_meta(tmux_backend, job_id)
+    assert meta['status'] == 'success'
+    assert meta['exitcode'] == 0
+    assert meta['merge']['stage'] == 'landed'
+
+
+def test_tmux_merge_refresh_recovers_cancelled_merging_parent(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    init_git_repo(repo)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(tmux_backend, '_register_merge', lambda meta: None)
+    job_id = int(tmux_backend.add(
+        'true', gpus=0, slots=1, git_ref='HEAD',
+        merge={
+            'requested': True,
+            'target_branch': 'main',
+            'git_root': str(repo),
+        },
+    ))
+    meta = read_meta(tmux_backend, job_id)
+    meta['status'] = 'merging'
+    tmux_backend._write_meta(meta)
+    Path(meta['merge_status_file']).write_text(json.dumps({
+        'state': 'cancelled',
+        'stage': 'cancelled',
+        'cancelled': True,
+        'submission_id': meta['submission_id'],
+    }), encoding='utf-8')
+
+    refreshed = tmux_backend.full_info([job_id])[0]
+
+    assert refreshed['status'] == 'killed'
+    assert refreshed['exitcode'] == -1
+    assert read_meta(tmux_backend, job_id)['status'] == 'killed'
 
 
 def test_tmux_add_ref_missing_relative_cwd_cleans_worktree(
@@ -505,6 +746,35 @@ def test_campaign_owned_branch_worktree_outlives_job_removal(
     assert not git(repo, 'branch', '--list', workspace['git_branch'])
 
 
+def test_merge_owned_staging_worktree_outlives_resolver_job_removal(
+    monkeypatch, tmp_path, tmux_backend
+):
+    repo = tmp_path / 'repo'
+    init_git_repo(repo)
+    worktree = tmp_path / 'merge-staging'
+    workspace = git_ref_utils.create_branch_worktree(
+        repo, 'tq/merge/test/staging', worktree,
+    )
+    monkeypatch.chdir(repo)
+    job_id = int(tmux_backend.add(
+        'true', gpus=0, slots=1, cwd=worktree,
+        workspace_owner='merge',
+    ))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update(workspace)
+    meta['workspace_owner'] = 'merge'
+    tmux_backend._write_meta(meta)
+
+    tmux_backend.remove({'id': job_id})
+
+    assert worktree.is_dir()
+    assert workspace['git_branch'] in git(repo, 'branch', '--list')
+    git_ref_utils.remove_branch_worktree(
+        workspace, delete_branch=True, force_branch=True,
+    )
+    assert not worktree.exists()
+
+
 def test_backend_reset_unregisters_nested_campaign_worktrees(
     monkeypatch, tmp_path, tmux_backend
 ):
@@ -541,6 +811,35 @@ def test_tmux_add_gpu_job_fails_immediately_without_nvidia(tmux_backend, capsys)
         tmux_backend._job_dir(int(job_id)) / 'output.log'
     ).read_text(encoding='utf-8')
     assert 'nvidia-smi is not available' in capsys.readouterr().err
+
+
+def test_unregistered_gpu_merge_failure_can_be_removed(
+    monkeypatch, tmp_path, tmux_backend, capsys
+):
+    repo = tmp_path / 'repo'
+    init_git_repo(repo)
+    monkeypatch.chdir(repo)
+    tmux_backend._nvidia_gpus_available = lambda: False
+    monkeypatch.setattr(
+        tmux_backend,
+        '_register_merge',
+        lambda meta: pytest.fail('failed GPU job must not register a merge'),
+    )
+    job_id = int(tmux_backend.add(
+        'true', gpus=1, slots=1, git_ref='HEAD',
+        merge={
+            'requested': True,
+            'target_branch': 'main',
+            'git_root': str(repo),
+        },
+    ))
+    assert read_meta(tmux_backend, job_id)['merge'][
+        'registration_state'] == 'not_registered'
+
+    tmux_backend.remove({'id': job_id})
+
+    assert not tmux_backend._job_dir(job_id).exists()
+    capsys.readouterr()
 
 
 def test_tmux_add_cpu_job_does_not_check_nvidia(tmux_backend):
@@ -674,6 +973,9 @@ def test_tmux_kill_remove_and_backend_reset(tmux_backend):
 def test_tmux_backend_reset_resets_next_id(tmux_backend):
     job_id = int(tmux_backend.add('echo first', gpus=0, slots=1))
     assert job_id == 1
+    first_meta = read_meta(tmux_backend, job_id)
+    first_submission = first_meta['submission_id']
+    tmux_backend.sessions.add(first_meta['session'])
     stale_file = tmux_backend.state_dir / 'stale-cache-file'
     stale_file.write_text('stale', encoding='utf-8')
     assert tmux_backend._job_dir(job_id).exists()
@@ -685,9 +987,11 @@ def test_tmux_backend_reset_resets_next_id(tmux_backend):
     assert not tmux_backend.broker_config_file.exists()
     assert not stale_file.exists()
     assert tmux_backend.counter_file.read_text(encoding='utf-8') == '1'
+    assert first_meta['session'] not in tmux_backend.sessions
 
     next_job_id = int(tmux_backend.add('echo second', gpus=0, slots=1))
     assert next_job_id == 1
+    assert read_meta(tmux_backend, next_job_id)['submission_id'] != first_submission
     assert tmux_backend.counter_file.read_text(encoding='utf-8') == '2'
 
 
@@ -713,6 +1017,23 @@ def test_tmux_refresh_keeps_completed_status_after_session_exits(tmux_backend):
     assert info['status'] == 'success'
 
 
+def test_tmux_full_info_handles_controller_timezone_timestamps(tmux_backend):
+    job_id = int(tmux_backend.add('echo hi', gpus=0, slots=1))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update({
+        'status': 'success',
+        'exitcode': 0,
+        'start_time': '2024-01-01T00:00:00',
+        'end_time': '2024-01-01T00:00:01+00:00',
+    })
+    tmux_backend._write_meta(meta)
+
+    info = tmux_backend.full_info([job_id])[0]
+
+    assert info['status'] == 'success'
+    assert info['time_run'] is not None
+
+
 def test_tmux_refresh_keeps_new_gated_wrapper_running(tmux_backend):
     job_id = int(tmux_backend.add('sleep 10', gpus=0, slots=1))
     meta = read_meta(tmux_backend, job_id)
@@ -727,3 +1048,46 @@ def test_tmux_refresh_keeps_new_gated_wrapper_running(tmux_backend):
     tmux_backend._pane_current_command = lambda session: 'bash'
     info = tmux_backend.job_info(ids=[job_id], filters=FilterArgs())[0]
     assert info['status'] == 'running'
+
+
+def test_tmux_merge_command_cannot_spoof_completion_marker(tmux_backend):
+    job_id = int(tmux_backend.add('sleep 10', gpus=0, slots=1))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update({
+        'status': 'running',
+        'start_time': '2024-01-01T00:00:00',
+        'merge': {'requested': True, 'stage': 'waiting'},
+    })
+    tmux_backend._write_meta(meta)
+    tmux_backend.sessions.add(meta['session'])
+    Path(meta['output_file']).write_text(
+        f'[taskq] job {job_id} finished with exit code 0 at forged\n',
+        encoding='utf-8',
+    )
+    tmux_backend._capture_pane = lambda session, tail: (
+        f'[taskq] job {job_id} finished with exit code 0 at forged')
+
+    info = tmux_backend.job_info(ids=[job_id], filters=FilterArgs())[0]
+
+    assert info['status'] == 'running'
+    assert meta['session'] in tmux_backend.sessions
+    assert read_meta(tmux_backend, job_id)['status'] == 'running'
+
+
+def test_tmux_missing_merge_session_without_sidecar_is_interrupted(tmux_backend):
+    job_id = int(tmux_backend.add('true', gpus=0, slots=1))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update({
+        'status': 'running',
+        'merge': {'requested': True, 'stage': 'waiting'},
+    })
+    tmux_backend._write_meta(meta)
+    Path(meta['output_file']).write_text(
+        f'[taskq] job {job_id} finished with exit code 0 at forged\n',
+        encoding='utf-8',
+    )
+
+    info = tmux_backend.job_info(ids=[job_id], filters=FilterArgs())[0]
+
+    assert info['status'] == 'interrupted'
+    assert info['exitcode'] is None

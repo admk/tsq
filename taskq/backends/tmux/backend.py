@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from ... import TOOL_NAME
@@ -15,15 +16,24 @@ from ...common import STATUSES, dict_simplify, file_tail_lines
 from ...common import project_config_dir, user_cache_dir, user_config_dir
 from .. import git_ref as git_ref_utils
 from ..base import BackendBase, BackendError, register_backend
+from . import lifecycle
 
 
-def render_wrapper(job_id, argv, session, output_file, start_file, env_exports):
+def render_wrapper(
+    job_id, argv, session, output_file, start_file, env_exports,
+    command_result_file=None, merge=False, submission_id=None,
+):
     template = Path(__file__).with_name('wrapper.sh').read_text(encoding='utf-8')
+    if command_result_file is None:
+        command_result_file = output_file.parent / 'command-result.json'
     return template.format(
         argv=shlex.join(argv),
         output_dir=shlex.quote(str(output_file.parent)),
         output_file=shlex.quote(str(output_file)),
         start_file=shlex.quote(str(start_file)),
+        command_result_file=shlex.quote(str(command_result_file)),
+        merge_enabled='1' if merge else '0',
+        submission_id=shlex.quote(str(submission_id or '')),
         env_exports=env_exports,
         job_id=job_id,
         session=shlex.quote(session),
@@ -32,8 +42,9 @@ def render_wrapper(job_id, argv, session, output_file, start_file, env_exports):
 
 @register_backend('tmux')
 class TmuxBackend(BackendBase):
-    BROKER_VERSION = '8'
+    BROKER_VERSION = '9'
     supports_git_ref = True
+    supports_git_merge = True
 
     def __init__(self, name, config):
         super().__init__(name, config)
@@ -99,15 +110,26 @@ class TmuxBackend(BackendBase):
     def _parse_time(value):
         if not value:
             return None
-        return datetime.datetime.fromisoformat(value)
+        parsed = datetime.datetime.fromisoformat(value)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
 
     @staticmethod
     def _encode_env(env):
-        return '\n'.join(
-            f'export {key}={shlex.quote(str(value))}'
-            for key, value in env.items()
-            if re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', key)
-        )
+        lines = []
+        for key, value in env.items():
+            if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', key):
+                continue
+            if value is None:
+                # A tmux server can carry environment values that are absent
+                # from the submitting client. Explicit unsets are therefore
+                # required for taskq-owned isolation boundaries.
+                lines.append('unset {}'.format(key))
+            else:
+                lines.append(
+                    'export {}={}'.format(key, shlex.quote(str(value))))
+        return '\n'.join(lines)
 
     @classmethod
     def _capture_job_env(cls, environ, config_env):
@@ -150,12 +172,10 @@ class TmuxBackend(BackendBase):
 
     def _write_broker_config(self):
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.broker_config_file.with_suffix('.json.tmp')
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump({'slots': self.config.get('slots', 1)}, f,
-                      indent=2, sort_keys=True)
-            f.write('\n')
-        os.replace(tmp, self.broker_config_file)
+        lifecycle.atomic_json(
+            self.broker_config_file,
+            {'slots': self.config.get('slots', 1)},
+        )
 
     def _next_id(self):
         self._ensure_state()
@@ -193,7 +213,7 @@ class TmuxBackend(BackendBase):
         job_dir = self._job_dir(meta['id'])
         job_dir.mkdir(parents=True, exist_ok=True)
         path = job_dir / 'meta.json'
-        tmp = path.with_suffix('.json.tmp')
+        tmp = path.with_name('.{}.{}.tmp'.format(path.name, os.getpid()))
         with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(meta, f, indent=2, sort_keys=True)
             f.write('\n')
@@ -233,6 +253,45 @@ class TmuxBackend(BackendBase):
 
     def resolve_git_ref(self, ref):
         return git_ref_utils.resolve_ref(ref)
+
+    def resolve_merge_spec(self, branch=None, cwd=None):
+        from ...merge.workflow import build_merge_spec
+
+        return build_merge_spec(self.config, cwd or os.getcwd(), branch)
+
+    def _register_merge(self, meta):
+        from ...merge.workflow import register_merge_job
+
+        return register_merge_job(self, meta)
+
+    @staticmethod
+    def _cancel_merge(meta, remove=False, required=False):
+        merge = meta.get('merge')
+        if not isinstance(merge, dict):
+            return None
+        if merge.get('registration_state') == 'not_registered':
+            return {'status': 'cancelled', 'unregistered': True}
+        try:
+            from ...merge.workflow import cancel_merge_job
+
+            result = cancel_merge_job(meta, remove=remove)
+        except Exception as e:
+            if required:
+                raise BackendError(
+                    f'could not safely cancel merge for job '
+                    f'{meta.get("id")}: {e}') from e
+            print(
+                f'Warning: failed to cancel merge for job '
+                f'{meta.get("id")}: {e}',
+                file=sys.stderr,
+            )
+            return None
+        status = result.get('status') if isinstance(result, dict) else None
+        if required and status not in {'cancelled', 'landed', 'failed'}:
+            raise BackendError(
+                f'could not confirm merge cancellation for job '
+                f'{meta.get("id")}; job was left unchanged')
+        return result
 
     def _all_meta(self):
         if not self.jobs_dir.exists():
@@ -285,11 +344,7 @@ class TmuxBackend(BackendBase):
         }
         self.controllers_dir.mkdir(parents=True, exist_ok=True)
         path = self._controller_file(name)
-        tmp = path.with_suffix('.json.tmp')
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(meta, f, indent=2, sort_keys=True)
-            f.write('\n')
-        os.replace(tmp, path)
+        lifecycle.atomic_json(path, meta)
         self._ensure_broker()
         return meta
 
@@ -303,11 +358,7 @@ class TmuxBackend(BackendBase):
         if path.exists():
             meta['enabled'] = False
             self.controllers_dir.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix('.json.tmp')
-            with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump(meta, f, indent=2, sort_keys=True)
-                f.write('\n')
-            os.replace(tmp, path)
+            lifecycle.atomic_json(path, meta)
         session = meta.get('session')
         if session and self._session_exists(session):
             self._tmux('kill-session', '-t', session, check=False)
@@ -454,10 +505,26 @@ class TmuxBackend(BackendBase):
             time.sleep(float(self.config.get('broker_interval', 1)))
 
     def _refresh_meta(self, meta):
+        if meta.get('status') == 'merging':
+            if lifecycle.refresh_merge(meta, self._now()):
+                self._write_meta(meta)
+            return meta
         if meta.get('status') != 'running':
             return meta
         session = meta.get('session')
         if session and self._session_exists(session):
+            command_result = lifecycle.command_result(meta)
+            if command_result is not None:
+                lifecycle.finish_command(
+                    meta,
+                    command_result['exitcode'],
+                    command_result.get('end_time') or self._now(),
+                )
+                if meta.get('status') == 'merging':
+                    lifecycle.refresh_merge(meta, self._now())
+                self._write_meta(meta)
+                self._tmux('kill-session', '-t', session, check=False)
+                return meta
             pane_text = self._capture_pane(session, 200)
             exitcode = self._finished_exitcode(
                 meta, pane_text)
@@ -479,6 +546,20 @@ class TmuxBackend(BackendBase):
         except FileNotFoundError:
             return meta
         if meta.get('status') != 'running':
+            if meta.get('status') == 'merging':
+                if lifecycle.refresh_merge(meta, self._now()):
+                    self._write_meta(meta)
+            return meta
+        command_result = lifecycle.command_result(meta)
+        if command_result is not None:
+            lifecycle.finish_command(
+                meta,
+                command_result['exitcode'],
+                command_result.get('end_time') or self._now(),
+            )
+            if meta.get('status') == 'merging':
+                lifecycle.refresh_merge(meta, self._now())
+            self._write_meta(meta)
             return meta
         exitcode = self._finished_exitcode(meta)
         if exitcode is not None:
@@ -499,6 +580,11 @@ class TmuxBackend(BackendBase):
 
     @staticmethod
     def _finished_exitcode(meta, pane_text=None):
+        # Merge commands hand off exclusively through the atomic command
+        # result sidecar.  Their stdout is untrusted and may contain text that
+        # resembles the legacy wrapper marker.
+        if isinstance(meta.get('merge'), dict):
+            return None
         output_file = meta.get('output_file')
         marker = (
             f'[taskq] job {meta["id"]} finished with exit code ')
@@ -572,6 +658,10 @@ class TmuxBackend(BackendBase):
             'workspace_owner': meta.get('workspace_owner'),
             'metadata': meta.get('metadata'),
             'internal': meta.get('internal'),
+            'submission_id': meta.get('submission_id'),
+            'merge': meta.get('merge'),
+            'command_exitcode': meta.get('command_exitcode'),
+            'failure_phase': meta.get('failure_phase'),
         }
         return {k: v for k, v in info.items() if v is not None}
 
@@ -649,9 +739,35 @@ class TmuxBackend(BackendBase):
                 self._tmux('kill-session', '-t', session, check=False)
 
     def backend_reset(self, args):
-        for meta in self._all_meta():
+        metas = self._all_meta()
+        for meta in metas:
+            self._cancel_merge(meta, remove=True, required=True)
+        # Cancellation is confirmed for every merge request before any
+        # destructive action. Now stop old wrappers so a reused numeric job
+        # directory cannot receive late output or sidecars from the old job.
+        for meta in metas:
+            session = meta.get('session')
+            if session and self._session_exists(session):
+                self._tmux('kill-session', '-t', session, check=False)
+        # Resolver processes are now stopped, so idle repository-scoped
+        # staging worktrees can be removed synchronously before this queue's
+        # controller registration is deleted with state_dir.
+        from ...merge.workflow import cleanup_merge_job
+
+        for meta in metas:
+            if not isinstance(meta.get('merge'), dict):
+                continue
+            try:
+                cleanup_merge_job(meta)
+            except Exception as error:
+                raise BackendError(
+                    'could not clean merge staging for job {}: {}'.format(
+                        meta.get('id'), error)
+                ) from error
+        for meta in metas:
             git_ref_utils.remove_worktree(meta)
         git_ref_utils.remove_nested_worktrees(self.state_dir / 'explore')
+        git_ref_utils.remove_nested_worktrees(self.state_dir / 'merge')
         shutil.rmtree(self.state_dir, ignore_errors=True)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         lock_file = self.state_dir / 'next_id.lock'
@@ -698,6 +814,7 @@ class TmuxBackend(BackendBase):
         self, command, gpus=None, slots=None, depends_on=None, env=None,
         git_ref=None, git_commit=None, git_root=None, source_cwd=None,
         cwd=None, metadata=None, internal=False, workspace_owner=None,
+        merge=None,
     ):
         alloc_config = self.config.get('alloc', {})
         gpus = gpus if gpus is not None else alloc_config.get('gpus', 0)
@@ -714,6 +831,10 @@ class TmuxBackend(BackendBase):
             json.dumps(metadata)
         except (TypeError, ValueError) as e:
             raise BackendError('job metadata must be JSON serializable') from e
+        try:
+            json.dumps(merge)
+        except (TypeError, ValueError) as e:
+            raise BackendError('merge metadata must be JSON serializable') from e
         checkout_args = (git_ref, git_commit, git_root, source_cwd)
         if cwd is not None and any(value is not None for value in checkout_args):
             raise BackendError('cwd cannot be combined with git checkout options')
@@ -724,12 +845,14 @@ class TmuxBackend(BackendBase):
             cwd = str(cwd)
         depends_on = [int(job_id) for job_id in depends_on or []]
         job_id = self._next_id()
+        submission_id = uuid.uuid4().hex
         session = self._session_name(job_id)
         job_dir = self._job_dir(job_id)
         output_file = job_dir / 'output.log'
         env_file = self._env_file(job_id)
         wrapper = job_dir / 'run.sh'
         start_file = job_dir / 'start'
+        sidecars = lifecycle.sidecar_paths(job_dir)
         git_meta = {}
         if cwd is None:
             try:
@@ -745,6 +868,26 @@ class TmuxBackend(BackendBase):
                 raise
         if workspace_owner is None:
             workspace_owner = git_meta.get('workspace_owner')
+        if merge is not None:
+            if not isinstance(merge, dict):
+                git_ref_utils.remove_worktree(git_meta)
+                shutil.rmtree(job_dir, ignore_errors=True)
+                raise BackendError('merge spec must be a mapping')
+            required = ('git_commit', 'git_root', 'git_worktree')
+            missing = [key for key in required if not git_meta.get(key)]
+            if missing:
+                git_ref_utils.remove_worktree(git_meta)
+                shutil.rmtree(job_dir, ignore_errors=True)
+                raise BackendError(
+                    'merge jobs require a taskq-managed git checkout')
+            merge_root = merge.get('git_root')
+            if merge_root and Path(merge_root).resolve() != Path(
+                git_meta['git_root']
+            ).resolve():
+                git_ref_utils.remove_worktree(git_meta)
+                shutil.rmtree(job_dir, ignore_errors=True)
+                raise BackendError(
+                    'merge destination and source checkout must share a repository')
         argv = shlex.split(command)
         job_env = (
             self._capture_job_env(os.environ, self.env)
@@ -752,6 +895,7 @@ class TmuxBackend(BackendBase):
         )
         meta = {
             'id': job_id,
+            'submission_id': submission_id,
             'command': command,
             'argv': argv,
             'status': 'queued',
@@ -773,8 +917,32 @@ class TmuxBackend(BackendBase):
             'workspace_owner': workspace_owner,
             'metadata': metadata,
             'internal': bool(internal),
+            'command_result_file': sidecars['command_result_file'],
         }
         meta.update({k: v for k, v in git_meta.items() if v is not None})
+        if merge is not None:
+            merge_spec = dict(merge)
+            merge_spec.update({
+                'job_id': job_id,
+                'submission_id': submission_id,
+                'job_dir': str(job_dir),
+                'source_base': git_meta['git_commit'],
+                'source_worktree': git_meta['git_worktree'],
+                'job_cwd': cwd,
+                'git_root': git_meta['git_root'],
+                'command_result_file': sidecars['command_result_file'],
+                'status_file': sidecars['merge_status_file'],
+                'result_file': sidecars['merge_result_file'],
+                'registration_state': 'registered',
+            })
+            merge_spec.setdefault('source_cwd', git_meta.get('source_cwd'))
+            merge_spec.setdefault('state', 'waiting')
+            merge_spec.setdefault('stage', 'waiting')
+            meta.update({
+                'merge': merge_spec,
+                'merge_status_file': sidecars['merge_status_file'],
+                'merge_result_file': sidecars['merge_result_file'],
+            })
         self._write_env(job_id, job_env)
         self._write_meta(meta)
         if int(gpus or 0) > 0 and not self._nvidia_gpus_available():
@@ -786,6 +954,8 @@ class TmuxBackend(BackendBase):
                 'status': 'failed',
                 'end_time': self._now(),
             })
+            if isinstance(meta.get('merge'), dict):
+                meta['merge']['registration_state'] = 'not_registered'
             self._write_meta(meta)
             git_ref_utils.remove_worktree(meta)
             print(message, file=sys.stderr)
@@ -799,10 +969,23 @@ class TmuxBackend(BackendBase):
                 output_file=output_file,
                 start_file=start_file,
                 env_exports=env_exports,
+                command_result_file=sidecars['command_result_file'],
+                merge=merge is not None,
+                submission_id=submission_id,
             ),
             encoding='utf-8',
         )
         wrapper.chmod(0o700)
+        if merge is not None:
+            try:
+                self._register_merge(meta)
+            except Exception:
+                self._cancel_merge(meta, remove=True)
+                if self._session_exists(session):
+                    self._tmux('kill-session', '-t', session, check=False)
+                git_ref_utils.remove_worktree(meta)
+                shutil.rmtree(job_dir, ignore_errors=True)
+                raise
         self._ensure_broker()
         return str(job_id)
 
@@ -812,8 +995,33 @@ class TmuxBackend(BackendBase):
         if not commit:
             print(f'{self._command} {" ".join(self._socket_args())} kill-session -t {session}')
             return
+        merge_request = self._cancel_merge(meta, required=True)
         if session and self._session_exists(session):
             self._tmux('kill-session', '-t', session, check=False)
+        if isinstance(meta.get('merge'), dict):
+            lifecycle.refresh_merge(meta, self._now())
+        request_status = (
+            merge_request.get('status')
+            if isinstance(merge_request, dict) else None
+        )
+        if meta.get('status') in {'success', 'failed'}:
+            self._write_meta(meta)
+            return
+        if request_status in {'landed', 'failed'}:
+            successful = request_status == 'landed'
+            meta['merge'].update({
+                'state': request_status,
+                'stage': request_status,
+            })
+            meta.update({
+                'status': 'success' if successful else 'failed',
+                'exitcode': 0 if successful else None,
+                'end_time': meta.get('end_time') or self._now(),
+            })
+            if not successful:
+                meta['failure_phase'] = 'merge'
+            self._write_meta(meta)
+            return
         meta.update({
             'status': 'killed',
             'exitcode': -1,
@@ -827,6 +1035,7 @@ class TmuxBackend(BackendBase):
         if not commit:
             print(f'rm -r {self._job_dir(info["id"])}')
             return
+        self._cancel_merge(meta, remove=True, required=True)
         if session and self._session_exists(session):
             self._tmux('kill-session', '-t', session, check=False)
         git_ref_utils.remove_worktree(meta)

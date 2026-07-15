@@ -59,6 +59,10 @@ class FilterActionBase(ActionBase):
             'action': 'store_true',
             'help': 'Perform the action on queued/allocating jobs.',
         },
+        ('--merging', ): {
+            'action': 'store_true',
+            'help': 'Perform the action on jobs waiting to merge.',
+        },
         ('-s', '--success'): {
             'action': 'store_true',
             'help': 'Perform the action on successful jobs.',
@@ -94,6 +98,7 @@ class FilterActionBase(ActionBase):
             force_all=args.all,
             running=args.running,
             queued=args.queued,
+            merging=args.merging,
             success=args.success,
             failed=args.failed,
             killed=args.killed,

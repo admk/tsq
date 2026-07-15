@@ -10,17 +10,18 @@ from abc import abstractmethod
 import tabulate
 from blessed import Terminal
 
-from ..common import tqdm, FilterArgs, file_tail_lines
+from ..common import ACTIVE_STATUSES, tqdm, FilterArgs, file_tail_lines
 from ..utils import escape_command_display, timedelta_format
 from .base import register_action
 from .filter import FilterActionBase
-from .repeat import dry_add_command
+from .repeat import dry_add_command, merge_replay_options
 
 
 term = Terminal()
 COLOR_STATUS = {
     'running': term.green,
     'queued': term.yellow,
+    'merging': term.cyan,
     'failed': term.red,
     'killed': term.orange,
     'success': term.blue,
@@ -224,12 +225,15 @@ class CommandsAction(ReadActionBase):
         outputs = []
         for i in info:
             if args.add_command:
+                merge, branch = merge_replay_options(i)
                 command = dry_add_command(
                     i['command'],
                     i.get('gpus_required', 0),
                     i.get('slots_required', 1),
                     i.get('depends_on'),
                     i.get('git_commit') or i.get('git_ref'),
+                    merge,
+                    branch,
                 )
             else:
                 command = escape_command_display(i['command'])
@@ -356,7 +360,7 @@ class OutputsAction(ReadActionBase):
                             self._print_follow_chunk(f.read())
                             position = f.tell()
                 current = self.backend.job_info([info['id']], FilterArgs())
-                if not current or current[0]['status'] not in ['queued', 'running']:
+                if not current or current[0]['status'] not in ACTIVE_STATUSES:
                     return 0
                 time.sleep(interval)
         except KeyboardInterrupt:
@@ -407,7 +411,7 @@ class WaitAction(ReadActionBase):
         self.options.update(self.wait_options)
 
     def main(self, args, tqdm_disable=False):
-        f = FilterArgs(running=True, queued=True)
+        f = FilterArgs(running=True, queued=True, merging=True)
         info = self.backend.job_info(self.ids, f)
         pbar = tqdm(total=len(info), desc='wait') if args.progress else None
         while True:

@@ -1,37 +1,29 @@
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
+from .. import git as git_utils
 from .base import BackendError
 
 
 def git_output(args):
-    try:
-        result = subprocess.run(
-            ['git', *args],
-            capture_output=True,
-            check=True,
-            text=True,
-        )
-    except FileNotFoundError as e:
-        raise BackendError('git command not found') from e
-    except subprocess.CalledProcessError as e:
-        message = (e.stderr or e.stdout or '').strip()
-        raise BackendError(message or 'git command failed') from e
-    return result.stdout.strip()
+    args = list(args)
+    cwd = os.getcwd()
+    if len(args) >= 2 and args[0] == '-C':
+        cwd = args[1]
+        args = args[2:]
+    return git_utils.git(cwd, *args)
 
 
 def resolve_ref(ref, cwd=None):
     cwd = cwd or os.getcwd()
     try:
-        root = git_output(['-C', cwd, 'rev-parse', '--show-toplevel'])
+        root = git_utils.repository_root(cwd)
     except BackendError as e:
         raise BackendError(f'--ref requires a git repository: {e}') from e
     try:
-        commit = git_output(
-            ['-C', root, 'rev-parse', '--verify', f'{ref}^{{commit}}'])
+        commit = git_utils.resolve_commit(root, ref)
     except BackendError as e:
         raise BackendError(f'could not resolve git ref {ref!r}: {e}') from e
     return root, commit
@@ -50,24 +42,27 @@ def worktree_cwd(source_cwd, git_root, git_worktree):
 
 def _run_worktree_add(git_root, args, git_worktree):
     try:
-        subprocess.run(
-            ['git', '-C', git_root, 'worktree', 'add', *args],
-            capture_output=True,
-            check=True,
-            text=True,
-        )
-    except FileNotFoundError as e:
-        raise BackendError('git command not found') from e
-    except subprocess.CalledProcessError as e:
-        message = (e.stderr or e.stdout or '').strip()
+        git_utils.git(git_root, 'worktree', 'add', *args)
+    except BackendError as e:
+        message = str(e).strip()
+        if message == 'git command failed':
+            message = ''
         raise BackendError(
             message or f'failed to create git worktree {git_worktree}'
         ) from e
 
 
 def create_worktree(git_root, git_commit, git_worktree):
-    _run_worktree_add(
-        git_root, ['--detach', str(git_worktree), git_commit], git_worktree)
+    try:
+        git_utils.add_detached_worktree(
+            git_root, git_worktree, git_commit)
+    except BackendError as e:
+        message = str(e).strip()
+        if message == 'git command failed':
+            message = ''
+        raise BackendError(
+            message or f'failed to create git worktree {git_worktree}'
+        ) from e
 
 
 def create_branch_worktree(
@@ -85,14 +80,13 @@ def create_branch_worktree(
         'git_root': git_root,
         'git_worktree': git_worktree,
         'git_branch': branch,
-        'git_commit': git_output(
-            ['-C', git_worktree, 'rev-parse', 'HEAD']),
+        'git_commit': git_utils.resolve_commit(git_worktree),
         'workspace_owner': 'campaign',
     }
 
 
 def remove_worktree(meta, force=False):
-    if meta.get('workspace_owner') == 'campaign' and not force:
+    if meta.get('workspace_owner') in {'campaign', 'merge'} and not force:
         return
     git_worktree = meta.get('git_worktree')
     if not git_worktree:
@@ -101,27 +95,21 @@ def remove_worktree(meta, force=False):
     removed = False
     if git_root:
         try:
-            subprocess.run(
-                [
-                    'git',
-                    '-C',
-                    git_root,
-                    'worktree',
-                    'remove',
-                    '--force',
-                    git_worktree,
-                ],
-                capture_output=True,
-                check=True,
-                text=True,
-            )
-            removed = True
-        except (FileNotFoundError, subprocess.CalledProcessError) as e:
+            removed = git_utils.remove_worktree(
+                git_root, git_worktree, force=True)
+        except BackendError as e:
             print(
                 f'Warning: failed to unregister git worktree '
                 f'{git_worktree}: {e}',
                 file=sys.stderr,
             )
+        else:
+            if not removed:
+                print(
+                    f'Warning: failed to unregister git worktree '
+                    f'{git_worktree}: git command failed',
+                    file=sys.stderr,
+                )
     if not removed:
         shutil.rmtree(git_worktree, ignore_errors=True)
 
@@ -153,30 +141,20 @@ def remove_nested_worktrees(root):
         dirs[:] = []
     for worktree in linked:
         try:
-            try:
-                branch = git_output([
-                    '-C', str(worktree), 'symbolic-ref', '--short', 'HEAD'])
-            except BackendError:
-                branch = None
-            common = Path(git_output([
-                '-C', str(worktree), 'rev-parse', '--git-common-dir',
-            ]))
-            if not common.is_absolute():
-                common = (worktree / common).resolve()
-            subprocess.run(
-                [
-                    'git', '--git-dir', str(common), 'worktree', 'remove',
-                    '--force', str(worktree),
-                ],
-                capture_output=True,
-                check=True,
-                text=True,
+            branch = git_utils.current_branch(worktree)
+            common = git_utils.common_dir(worktree)
+            result = git_utils.git(
+                common, '--git-dir', common, 'worktree', 'remove', '--force',
+                str(worktree), check=False,
             )
+            if result.returncode:
+                message = (result.stderr or result.stdout or '').strip()
+                raise BackendError(message or 'git command failed')
             if branch and branch.startswith('tq/explore/'):
-                subprocess.run(
-                    ['git', '--git-dir', str(common), 'branch', '-D', branch],
-                    capture_output=True, check=False, text=True)
-        except (BackendError, FileNotFoundError, subprocess.CalledProcessError) as e:
+                git_utils.git(
+                    common, '--git-dir', common, 'branch', '-D', branch,
+                    check=False)
+        except BackendError as e:
             print(
                 f'Warning: failed to unregister git worktree {worktree}: {e}',
                 file=sys.stderr,

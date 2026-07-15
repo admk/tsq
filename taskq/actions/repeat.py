@@ -1,3 +1,4 @@
+import json
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -60,10 +61,16 @@ def dry_command_argv(command):
     return argv
 
 
-def dry_add_command(command, gpus, slots, depends_on=None, ref=None):
+def dry_add_command(
+    command, gpus, slots, depends_on=None, ref=None, merge=False, branch=None,
+):
     argv = [TOOL_NAME, 'add']
     if ref:
         argv += ['--ref', str(ref)]
+    if merge:
+        argv.append('--merge')
+    if branch is not None:
+        argv += ['--branch', str(branch)]
     if include_gpus(gpus):
         argv += ['-G', str(gpus)]
     argv += ['-N', str(slots)]
@@ -71,6 +78,42 @@ def dry_add_command(command, gpus, slots, depends_on=None, ref=None):
         argv += ['-D', ','.join(str(i) for i in depends_on)]
     argv += dry_command_argv(command)
     return escape_command_display(shlex.join(argv))
+
+
+def resolve_backend_merge_spec(backend, branch=None, cwd=None):
+    """Resolve and normalize a backend-specific merge request for storage."""
+    if not getattr(backend, 'supports_git_merge', False):
+        raise CLIError(
+            f"backend {backend.name!r} does not support --merge")
+    resolver = getattr(backend, 'resolve_merge_spec', None)
+    if not callable(resolver):
+        raise CLIError(
+            f"backend {backend.name!r} advertises --merge support but cannot "
+            'resolve merge targets')
+    spec = resolver(branch) if cwd is None else resolver(branch, cwd=cwd)
+    try:
+        return json.loads(json.dumps(spec, allow_nan=False))
+    except (TypeError, ValueError) as e:
+        raise CLIError(
+            f"backend {backend.name!r} returned a non-JSON-safe merge spec"
+        ) from e
+
+
+def merge_replay_options(info):
+    merge = info.get('merge')
+    if not isinstance(merge, dict) or not merge.get('requested'):
+        return False, None
+    return True, merge.get('target_branch')
+
+
+def merge_replay_cwd(info):
+    merge = info.get('merge')
+    if not isinstance(merge, dict):
+        merge = {}
+    return (
+        info.get('git_root') or merge.get('repo_root')
+        or info.get('source_cwd') or merge.get('source_cwd')
+    )
 
 
 def unique_append(values, value):

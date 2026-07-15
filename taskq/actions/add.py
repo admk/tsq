@@ -17,6 +17,7 @@ from .repeat import (
     add_repeated,
     dry_add_command,
     repeat_options,
+    resolve_backend_merge_spec,
     validate_repeat_count,
 )
 
@@ -47,6 +48,17 @@ class AddAction(DryActionBase):
             'help': (
                 'Run the job from this git branch, tag, or commit. '
                 'The ref is resolved to an exact commit when queued.'),
+        },
+        ('--merge', ): {
+            'action': 'store_true',
+            'help': (
+                'Merge successful job changes back into the destination '
+                'branch.'),
+        },
+        ('--branch', ): {
+            'type': str,
+            'default': None,
+            'help': 'Destination branch for --merge.',
         },
         **repeat_options,
         ('-u', '--unique'): {
@@ -89,6 +101,10 @@ class AddAction(DryActionBase):
             parse_id_selector(args.depends_on)
             if args.depends_on else []
         )
+        if args.branch is not None and not args.merge:
+            raise CLIError('--branch requires --merge')
+        if args.merge and args.ref is None:
+            args.ref = 'HEAD'
         args.repeat = validate_repeat_count(args.repeat)
         return args
 
@@ -209,8 +225,13 @@ class AddAction(DryActionBase):
         return {}
 
     @staticmethod
-    def _request_kwargs(ref_kwargs):
-        return dict(ref_kwargs)
+    def _request_kwargs(ref_kwargs, merge_kwargs=None):
+        return dict(ref_kwargs, **(merge_kwargs or {}))
+
+    def _resolve_merge(self, merge, branch):
+        if not merge:
+            return {}
+        return {'merge': resolve_backend_merge_spec(self.backend, branch)}
 
     def main(self, args):
         commands = self._extrapolate_inputs(
@@ -236,13 +257,14 @@ class AddAction(DryActionBase):
             if STDIN_TTY:
                 print('Use "-f -" to read commands from stdin.')
             return
+        merge_kwargs = self._resolve_merge(args.merge, args.branch)
         ref_kwargs = self._resolve_ref(args.ref)
         if not args.commit:
             gpus, slots = self._resolved_alloc(self.backend.config, args)
             requests = [
                 AddRequest(
                     c, gpus, slots, args.depends_on,
-                    kwargs=self._request_kwargs(ref_kwargs),
+                    kwargs=self._request_kwargs(ref_kwargs, merge_kwargs),
                 )
                 for c in commands
             ]
@@ -256,6 +278,8 @@ class AddAction(DryActionBase):
                         request.slots,
                         depends_on,
                         request.kwargs.get('git_ref'),
+                        args.merge,
+                        args.branch,
                     )
                 ),
                 chain=args.chain,
@@ -268,7 +292,7 @@ class AddAction(DryActionBase):
         requests = [
             AddRequest(
                 c, args.gpus, args.slots, args.depends_on,
-                kwargs=self._request_kwargs(ref_kwargs),
+                kwargs=self._request_kwargs(ref_kwargs, merge_kwargs),
             )
             for c in commands
         ]

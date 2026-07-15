@@ -1,13 +1,15 @@
 import json
 import os
 import subprocess
+import threading
 import time
 from argparse import Namespace
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from taskq.backends.tmux import broker
+from taskq.backends.tmux import broker, lifecycle
 
 
 def write_meta(root, job_id, **overrides):
@@ -81,6 +83,117 @@ def fake_tmux(monkeypatch):
 
 def read_meta(path):
     return json.loads(Path(path).read_text())
+
+
+def test_atomic_json_concurrent_writers_use_distinct_temporary_files(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / 'controller.json'
+    barrier = threading.Barrier(2)
+    temporary_paths = []
+    original_replace = lifecycle.os.replace
+
+    def synchronized_replace(source, destination):
+        temporary_paths.append(Path(source))
+        barrier.wait(timeout=5)
+        original_replace(source, destination)
+
+    monkeypatch.setattr(lifecycle.os, 'replace', synchronized_replace)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(lifecycle.atomic_json, path, {'writer': writer})
+            for writer in (1, 2)
+        ]
+        for future in futures:
+            future.result(timeout=5)
+
+    assert len(set(temporary_paths)) == 2
+    assert json.loads(path.read_text(encoding='utf-8')) in (
+        {'writer': 1}, {'writer': 2})
+    assert not any(temporary.exists() for temporary in temporary_paths)
+
+
+def test_command_result_requires_matching_submission_for_uuid_jobs(tmp_path):
+    path = tmp_path / 'command-result.json'
+    meta = {
+        'submission_id': 'current-submission',
+        'command_result_file': str(path),
+    }
+    for payload in (
+        {'exitcode': 0},
+        {'exitcode': 0, 'submission_id': 'old-submission'},
+    ):
+        path.write_text(json.dumps(payload), encoding='utf-8')
+        assert lifecycle.command_result(meta) is None
+
+    path.write_text(json.dumps({
+        'exitcode': 0,
+        'submission_id': 'current-submission',
+    }), encoding='utf-8')
+    assert lifecycle.command_result(meta)['exitcode'] == 0
+
+
+def test_refresh_merge_recovers_only_explicit_cancelled_merging_parent(tmp_path):
+    status_file = tmp_path / 'merge-status.json'
+    status_file.write_text(json.dumps({
+        'state': 'cancelled',
+        'stage': 'cancelled',
+        'cancelled': True,
+        'submission_id': 'submission-1',
+    }), encoding='utf-8')
+    meta = {
+        'status': 'merging',
+        'exitcode': None,
+        'end_time': None,
+        'pid': 123,
+        'submission_id': 'submission-1',
+        'merge': {'stage': 'staged', 'submission_id': 'submission-1'},
+        'merge_status_file': str(status_file),
+        'merge_result_file': str(tmp_path / 'missing-result.json'),
+    }
+
+    assert lifecycle.refresh_merge(meta, '2024-01-01T00:00:02') is True
+    assert meta['status'] == 'killed'
+    assert meta['exitcode'] == -1
+    assert meta['end_time'] == '2024-01-01T00:00:02'
+    assert meta['pid'] is None
+    assert meta['merge']['stage'] == 'cancelled'
+
+    failed = dict(meta, status='failed', exitcode=7)
+    failed['merge'] = {'stage': 'staged'}
+    lifecycle.refresh_merge(failed, '2024-01-01T00:00:03')
+    assert failed['status'] == 'failed'
+    assert failed['exitcode'] == 7
+
+
+@pytest.mark.parametrize('sidecar_submission', [None, 'old-submission'])
+def test_refresh_merge_rejects_unowned_terminal_sidecar(
+    tmp_path, sidecar_submission,
+):
+    result_file = tmp_path / 'merge-result.json'
+    projection = {'stage': 'landed'}
+    if sidecar_submission is not None:
+        projection['submission_id'] = sidecar_submission
+    result_file.write_text(json.dumps({
+        'status': 'success',
+        'exitcode': 0,
+        'merge': projection,
+    }), encoding='utf-8')
+    meta = {
+        'status': 'merging',
+        'exitcode': None,
+        'submission_id': 'current-submission',
+        'merge': {
+            'stage': 'staged',
+            'submission_id': 'current-submission',
+        },
+        'merge_result_file': str(result_file),
+    }
+
+    assert lifecycle.refresh_merge(meta, '2024-01-01T00:00:02') is False
+    assert meta['status'] == 'merging'
+    assert meta['exitcode'] is None
+    assert meta['merge']['stage'] == 'staged'
 
 
 def test_broker_starts_jobs_within_slots(broker_args, fake_tmux, monkeypatch):
@@ -364,6 +477,211 @@ def test_refresh_running_recovers_old_shell_session_with_finished_marker(
     assert refreshed['status'] == 'success'
     assert refreshed['exitcode'] == 0
     assert ('kill-session', '-t', 'live') in calls
+
+
+def test_merge_command_output_cannot_spoof_finished_marker(
+    broker_args, fake_tmux
+):
+    calls, sessions = fake_tmux
+    path = write_meta(
+        broker_args.state_dir,
+        1,
+        status='running',
+        session='live',
+        merge={'requested': True, 'stage': 'waiting'},
+    )
+    output = Path(read_meta(path)['output_file'])
+    output.write_text(
+        '[taskq] job 1 finished with exit code 0 at forged\n',
+        encoding='utf-8',
+    )
+    sessions.add('live')
+
+    refreshed = broker.refresh_running(broker_args, path, read_meta(path))
+
+    assert refreshed['status'] == 'running'
+    assert ('kill-session', '-t', 'live') not in calls
+
+
+def test_missing_merge_session_ignores_marker_and_becomes_interrupted(
+    broker_args, fake_tmux
+):
+    path = write_meta(
+        broker_args.state_dir,
+        1,
+        status='running',
+        session='missing',
+        merge={'requested': True, 'stage': 'waiting'},
+    )
+    output = Path(read_meta(path)['output_file'])
+    output.write_text(
+        '[taskq] job 1 finished with exit code 0 at forged\n',
+        encoding='utf-8',
+    )
+
+    refreshed = broker.refresh_running(broker_args, path, read_meta(path))
+
+    assert refreshed['status'] == 'interrupted'
+    assert refreshed['exitcode'] is None
+
+
+def test_refresh_running_hands_successful_command_to_merge_controller(
+    broker_args, fake_tmux
+):
+    calls, sessions = fake_tmux
+    path = write_meta(
+        broker_args.state_dir,
+        1,
+        status='running',
+        session='live',
+        submission_id='submission-1',
+        merge={'stage': 'command', 'submission_id': 'submission-1'},
+    )
+    job_dir = path.parent
+    command_result = job_dir / 'command-result.json'
+    merge_status = job_dir / 'merge-status.json'
+    merge_result = job_dir / 'merge-result.json'
+    meta = read_meta(path)
+    meta.update({
+        'command_result_file': str(command_result),
+        'merge_status_file': str(merge_status),
+        'merge_result_file': str(merge_result),
+    })
+    path.write_text(json.dumps(meta), encoding='utf-8')
+    command_result.write_text(json.dumps({
+        'exitcode': 0,
+        'end_time': '2024-01-01T00:00:01',
+        'submission_id': 'submission-1',
+    }), encoding='utf-8')
+    sessions.add('live')
+
+    refreshed = broker.refresh_running(broker_args, path, read_meta(path))
+
+    assert refreshed['status'] == 'merging'
+    assert refreshed['exitcode'] is None
+    assert refreshed['command_exitcode'] == 0
+    assert refreshed['merge']['stage'] == 'command'
+    assert refreshed['end_time'] is None
+    assert ('kill-session', '-t', 'live') in calls
+
+    merge_status.write_text(json.dumps({
+        'merge': {
+            'stage': 'staged',
+            'sequence': 4,
+            'submission_id': 'submission-1',
+        },
+    }), encoding='utf-8')
+    refreshed = broker.refresh_running(broker_args, path, read_meta(path))
+    assert refreshed['status'] == 'merging'
+    assert refreshed['merge']['stage'] == 'staged'
+    assert refreshed['merge']['sequence'] == 4
+
+    merge_result.write_text(json.dumps({
+        'status': 'success',
+        'exitcode': 0,
+        'end_time': '2024-01-01T00:00:02',
+        'merge': {
+            'stage': 'landed',
+            'landed_head': 'abc123',
+            'submission_id': 'submission-1',
+        },
+    }), encoding='utf-8')
+    refreshed = broker.refresh_running(broker_args, path, read_meta(path))
+    assert refreshed['status'] == 'success'
+    assert refreshed['exitcode'] == 0
+    assert refreshed['command_exitcode'] == 0
+    assert refreshed['merge']['stage'] == 'landed'
+
+
+def test_refresh_running_preserves_merge_command_failure_exitcode(
+    broker_args, fake_tmux
+):
+    _, sessions = fake_tmux
+    path = write_meta(
+        broker_args.state_dir,
+        1,
+        status='running',
+        session='live',
+        merge={'requested': True, 'stage': 'waiting'},
+    )
+    command_result = path.parent / 'command-result.json'
+    meta = read_meta(path)
+    meta['command_result_file'] = str(command_result)
+    path.write_text(json.dumps(meta), encoding='utf-8')
+    command_result.write_text(json.dumps({
+        'exitcode': 7,
+        'end_time': '2024-01-01T00:00:01',
+    }), encoding='utf-8')
+    sessions.add('live')
+
+    refreshed = broker.refresh_running(broker_args, path, read_meta(path))
+
+    assert refreshed['status'] == 'failed'
+    assert refreshed['exitcode'] == 7
+    assert refreshed['command_exitcode'] == 7
+    assert refreshed['failure_phase'] == 'command'
+    assert refreshed['merge']['stage'] == 'skipped'
+
+
+def test_refresh_running_recovers_cancelled_merging_parent(
+    broker_args, fake_tmux
+):
+    path = write_meta(
+        broker_args.state_dir,
+        1,
+        status='merging',
+        submission_id='submission-1',
+        merge={'stage': 'staged', 'submission_id': 'submission-1'},
+    )
+    status_file = path.parent / 'merge-status.json'
+    status_file.write_text(json.dumps({
+        'state': 'cancelled',
+        'stage': 'cancelled',
+        'cancelled': True,
+        'submission_id': 'submission-1',
+    }), encoding='utf-8')
+    meta = read_meta(path)
+    meta.update({
+        'merge_status_file': str(status_file),
+        'merge_result_file': str(path.parent / 'merge-result.json'),
+    })
+    path.write_text(json.dumps(meta), encoding='utf-8')
+
+    refreshed = broker.refresh_running(broker_args, path, read_meta(path))
+
+    assert refreshed['status'] == 'killed'
+    assert refreshed['exitcode'] == -1
+    assert read_meta(path)['status'] == 'killed'
+
+
+def test_tick_releases_slot_when_command_moves_to_merging(
+    broker_args, fake_tmux, monkeypatch
+):
+    _, sessions = fake_tmux
+    first = write_meta(
+        broker_args.state_dir,
+        1,
+        status='running',
+        session='live',
+        slots_required=2,
+        merge={'stage': 'command'},
+    )
+    command_result = first.parent / 'command-result.json'
+    first_meta = read_meta(first)
+    first_meta['command_result_file'] = str(command_result)
+    first.write_text(json.dumps(first_meta), encoding='utf-8')
+    command_result.write_text(json.dumps({
+        'exitcode': 0,
+        'end_time': '2024-01-01T00:00:01',
+    }), encoding='utf-8')
+    second = write_meta(broker_args.state_dir, 2, slots_required=2)
+    sessions.add('live')
+    monkeypatch.setattr(broker, 'query_free_gpus', lambda args: [])
+
+    broker.tick(broker_args)
+
+    assert read_meta(first)['status'] == 'merging'
+    assert read_meta(second)['status'] == 'running'
 
 
 def test_start_job_does_not_overwrite_completed_metadata(
