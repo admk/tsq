@@ -1017,6 +1017,49 @@ def test_tmux_refresh_keeps_completed_status_after_session_exits(tmux_backend):
     assert info['status'] == 'success'
 
 
+def test_tmux_marks_managed_response_validation_failure(tmux_backend):
+    job_id = int(tmux_backend.add(
+        'echo hi', gpus=0, slots=0, internal=True,
+        workspace_owner='campaign', metadata={
+            'campaign_id': 'c1',
+            'role': 'planner',
+            'workflow_metadata': {'agent': True},
+        },
+    ))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update({'status': 'success', 'exitcode': 0})
+    tmux_backend._write_meta(meta)
+
+    info = tmux_backend.mark_workflow_failed(
+        {'id': job_id},
+        reason='invalid planner response: missing TASKQ_JSON',
+        phase='response_validation',
+    )
+
+    assert info['status'] == 'failed'
+    assert info.get('exitcode') is None
+    assert info['command_exitcode'] == 0
+    assert info['failure_phase'] == 'response_validation'
+    assert info['failure_reason'] == (
+        'invalid planner response: missing TASKQ_JSON')
+    assert tmux_backend.full_info([job_id])[0]['status'] == 'failed'
+    assert [item['id'] for item in tmux_backend.full_info(
+        filters=FilterArgs(failed=True))] == [job_id]
+    assert tmux_backend.full_info(filters=FilterArgs(success=True)) == []
+    assert tmux_backend.mark_workflow_failed(
+        {'id': job_id}, phase='response_validation')['status'] == 'failed'
+
+
+def test_tmux_refuses_workflow_failure_for_ordinary_job(tmux_backend):
+    job_id = int(tmux_backend.add('echo hi', gpus=0, slots=1))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update({'status': 'success', 'exitcode': 0})
+    tmux_backend._write_meta(meta)
+
+    with pytest.raises(BackendError, match='not a managed'):
+        tmux_backend.mark_workflow_failed({'id': job_id})
+
+
 def test_tmux_full_info_handles_controller_timezone_timestamps(tmux_backend):
     job_id = int(tmux_backend.add('echo hi', gpus=0, slots=1))
     meta = read_meta(tmux_backend, job_id)

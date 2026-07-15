@@ -80,6 +80,10 @@ class BackendBase:
     def output(self, info, tail, shell=False):
         raise NotImplementedError
 
+    def mark_workflow_failed(self, info, reason=None, phase='workflow'):
+        """Override a successful managed job with a workflow-level failure."""
+        raise NotImplementedError
+
     @abstractmethod
     def add(
         self, command, gpus=None, slots=None, depends_on=None, merge=None,

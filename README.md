@@ -509,7 +509,7 @@ are `id`, `status`, `slots`, `gpus`, `gpu_ids`, `enqueue`,
 | `queued` | Waiting for slots or GPU allocation. |
 | `running` | Started and currently running. |
 | `merging` | Command succeeded; its staged change is resolving or waiting to land. The job holds no slots or GPUs. |
-| `success` | Finished with exit code `0`. |
-| `failed` | Finished with a non-zero exit code or failed to start. |
+| `success` | Finished with exit code `0` and passed any managed workflow validation. |
+| `failed` | Finished with a non-zero exit code, failed to start, or failed managed workflow validation. |
 | `killed` | Killed through `tq kill` or backend equivalent. |
 | `interrupted` | A tmux job session disappeared without a recorded exit code. |

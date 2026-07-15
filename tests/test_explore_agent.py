@@ -56,17 +56,27 @@ def test_prompt_renderer_rejects_unknown_template_values():
         render_prompt('$missing', objective='goal')
 
 
-def test_extract_taskq_json_requires_single_final_marker_line():
+def test_extract_taskq_json_uses_last_marker_line_despite_trailing_output():
     assert extract_taskq_json(
-        'Evidence above.\nTASKQ_JSON: {"decision":"accept"}\n'
+        'Evidence above.\n'
+        'TASKQ_JSON: {"decision":"adjust"}\n'
+        'TASKQ_JSON: {"decision":"accept"}\n'
+        'tokens used: 123\n'
+        '[taskq] job finished with exit code 0\n'
     ) == {'decision': 'accept'}
 
     with pytest.raises(AgentResponseError):
         extract_taskq_json('TASKQ_JSON:\n{"decision":"accept"}')
     with pytest.raises(AgentResponseError):
         extract_taskq_json('TASKQ_JSON: []')
-    with pytest.raises(AgentResponseError):
-        extract_taskq_json('TASKQ_JSON: {}\ntrailing prose')
+    with pytest.raises(AgentResponseError, match='invalid TASKQ_JSON'):
+        extract_taskq_json(
+            'TASKQ_JSON: {"decision":"accept"}\n'
+            'TASKQ_JSON: not-json\n'
+            'trailing output'
+        )
+    with pytest.raises(AgentResponseError, match='does not contain'):
+        extract_taskq_json('ordinary prose only')
 
 
 def test_parse_planner_response_validates_directions_and_count():

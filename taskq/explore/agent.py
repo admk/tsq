@@ -175,16 +175,19 @@ def render_prompt(template: str, **values: Any) -> str:
 
 
 def extract_taskq_json(output: str) -> Dict[str, Any]:
-    """Extract a JSON object from the final non-empty response line."""
+    """Extract a JSON object from the last TASKQ_JSON response line."""
     if not isinstance(output, str):
         raise AgentResponseError('agent response must be text')
-    lines = output.rstrip().splitlines()
-    if not lines:
+    if not output.strip():
         raise AgentResponseError('agent response is empty')
-    line = lines[-1].lstrip()
-    if not line.startswith(TASKQ_JSON_PREFIX):
+    line = next((
+        candidate.lstrip()
+        for candidate in reversed(output.splitlines())
+        if candidate.lstrip().startswith(TASKQ_JSON_PREFIX)
+    ), None)
+    if line is None:
         raise AgentResponseError(
-            'agent response must end with a single-line TASKQ_JSON object'
+            'agent response does not contain a single-line TASKQ_JSON object'
         )
     payload = line[len(TASKQ_JSON_PREFIX):].strip()
     if not payload:

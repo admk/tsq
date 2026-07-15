@@ -286,6 +286,7 @@ class ExploreController:
         try:
             directions = parse_planner_response(output, count)
         except AgentResponseError as error:
+            self._mark_response_failed(job, error)
             if self._queue_response_repair(job, error):
                 return
             self._stall_campaign('invalid planner response: {}'.format(error))
@@ -507,6 +508,7 @@ class ExploreController:
         try:
             decision = parse_reviewer_response(output)
         except AgentResponseError as error:
+            self._mark_response_failed(job, error)
             if self._queue_response_repair(job, error):
                 return
             decision = {
@@ -977,6 +979,20 @@ class ExploreController:
             job.get('attempt_id'), job.get('direction_id'), control=True,
             metadata=metadata)
         return True
+
+    def _mark_response_failed(self, job, error):
+        if job['status'] != 'success':
+            return
+        reason = 'invalid {} response: {}'.format(job['role'], error)
+        self.backend.mark_workflow_failed(
+            {'id': int(job['backend_job_id'])},
+            reason=reason,
+            phase='response_validation',
+        )
+        metadata = dict(job.get('metadata') or {})
+        metadata['response_error'] = str(error)
+        self.state.update_job(
+            job['id'], status='failed', metadata=metadata)
 
     def _restore_control_worktree(self, job):
         cwd = job['metadata'].get('control_worktree')

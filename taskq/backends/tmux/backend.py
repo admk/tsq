@@ -663,6 +663,7 @@ class TmuxBackend(BackendBase):
             'merge': meta.get('merge'),
             'command_exitcode': meta.get('command_exitcode'),
             'failure_phase': meta.get('failure_phase'),
+            'failure_reason': meta.get('failure_reason'),
         }
         return {k: v for k, v in info.items() if v is not None}
 
@@ -810,6 +811,43 @@ class TmuxBackend(BackendBase):
         if not out:
             out = self._tail_file(meta.get('output_file'), tail)
         return out
+
+    def mark_workflow_failed(self, info, reason=None, phase='workflow'):
+        """Mark an internal campaign agent job as a workflow-level failure."""
+        meta = self._refresh_meta(self._read_meta(info['id']))
+        backend_meta = meta.get('metadata') or {}
+        workflow_meta = backend_meta.get('workflow_metadata') or {}
+        managed_agent = (
+            meta.get('internal') is True
+            and meta.get('workspace_owner') == 'campaign'
+            and backend_meta.get('role') in {'planner', 'reviewer'}
+            and workflow_meta.get('agent') is True
+        )
+        if not managed_agent:
+            raise BackendError(
+                'job {} is not a managed response-validation job'.format(
+                    info['id'])
+            )
+        if (
+            meta.get('status') == 'failed'
+            and meta.get('failure_phase') == phase
+        ):
+            return self._full_from_meta(meta)
+        if meta.get('status') != 'success':
+            raise BackendError(
+                'cannot mark job {} failed from status {}'.format(
+                    info['id'], meta.get('status'))
+            )
+        meta.update({
+            'status': 'failed',
+            'command_exitcode': meta.get('exitcode'),
+            'exitcode': None,
+            'failure_phase': phase,
+        })
+        if reason:
+            meta['failure_reason'] = str(reason)
+        self._write_meta(meta)
+        return self._full_from_meta(meta)
 
     def add(
         self, command, gpus=None, slots=None, depends_on=None, env=None,

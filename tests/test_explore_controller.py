@@ -53,6 +53,19 @@ class FakeBackend:
     def output(self, info, _tail):
         return self.outputs.get(int(info['id']), '')
 
+    def mark_workflow_failed(self, info, reason=None, phase='workflow'):
+        job = self.jobs[int(info['id'])]
+        assert job['status'] in {'success', 'failed'}
+        if job['status'] == 'success':
+            job.update({
+                'status': 'failed',
+                'command_exitcode': job['exitcode'],
+                'exitcode': None,
+                'failure_phase': phase,
+                'failure_reason': reason,
+            })
+        return dict(job)
+
     def unregister_controller(self, campaign_id):
         self.unregistered.append(campaign_id)
 
@@ -431,8 +444,63 @@ def test_invalid_reviewer_gets_one_schema_repair_turn(campaign):
 
     reviews = campaign.state.list_jobs(campaign_id='c1', role='reviewer')
     assert len(reviews) == 2
+    assert reviews[0]['status'] == 'failed'
+    assert 'does not contain' in reviews[0]['metadata']['response_error']
+    backend_job = campaign.backend.jobs[int(reviews[0]['backend_job_id'])]
+    assert backend_job['status'] == 'failed'
+    assert backend_job['command_exitcode'] == 0
+    assert backend_job['failure_phase'] == 'response_validation'
+    event = campaign.state.list_events(job_id=reviews[0]['id'])[0]
+    assert event['status'] == 'completed'
+    assert event['payload']['exit_code'] == 0
     assert reviews[-1]['metadata']['repair_count'] == 1
+    repair_prompt = reviews[-1]['metadata']['response_prompt']
+    assert 'review' in repair_prompt
+    assert (
+        'agent response does not contain a single-line TASKQ_JSON object'
+        in repair_prompt
+    )
     assert campaign.state.list_decisions('c1') == []
+
+
+def test_planner_repair_gets_error_and_accepts_backend_trailer(campaign):
+    first_id = campaign.controller._queue_agent(
+        'planner', 'plan', campaign.mainline, control=True,
+        metadata={'direction_count': 1},
+    )
+    first = campaign.state.get_job(first_id)
+    campaign.backend.finish(first['backend_job_id'], 'not json')
+
+    campaign.controller.reconcile()
+
+    planners = campaign.state.list_jobs(campaign_id='c1', role='planner')
+    assert len(planners) == 2
+    assert planners[0]['status'] == 'failed'
+    assert campaign.backend.jobs[
+        int(planners[0]['backend_job_id'])]['status'] == 'failed'
+    repair = planners[-1]
+    assert repair['metadata']['repair_count'] == 1
+    assert (
+        'agent response does not contain a single-line TASKQ_JSON object'
+        in repair['metadata']['response_prompt']
+    )
+
+    campaign.backend.finish(
+        repair['backend_job_id'],
+        'TASKQ_JSON: {"directions":[{"hypothesis":"batch reads"}]}\n'
+        'tokens used: 123\n'
+        '[taskq] job finished with exit code 0',
+    )
+    campaign.controller.reconcile()
+
+    directions = campaign.state.list_directions('c1')
+    assert [item['hypothesis'] for item in directions] == ['batch reads']
+    planners = campaign.state.list_jobs(campaign_id='c1', role='planner')
+    assert len(planners) == 2
+    assert planners[-1]['status'] == 'success'
+    assert campaign.backend.jobs[
+        int(planners[-1]['backend_job_id'])]['status'] == 'success'
+    assert campaign.state.get_campaign('c1')['stall_count'] == 0
 
 
 def test_accepts_are_enqueued_in_review_completion_order(campaign):
@@ -469,7 +537,9 @@ def test_planner_finishing_behind_merge_barrier_does_not_start_attempt(campaign)
     campaign.state.enqueue_merge_request('c1', queued['id'], queued['head'])
     campaign.backend.finish(
         planner['backend_job_id'],
-        'TASKQ_JSON: {"directions":[{"hypothesis":"batch reads"}]}',
+        'TASKQ_JSON: {"directions":[{"hypothesis":"batch reads"}]}\n'
+        'tokens used: 123\n'
+        '[taskq] job finished with exit code 0',
     )
 
     campaign.controller.reconcile()
