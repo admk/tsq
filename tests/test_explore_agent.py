@@ -2,8 +2,10 @@ import pytest
 
 from taskq.explore.agent import (
     DEFAULT_COMMAND_TEMPLATE,
-    REVIEW_DECISIONS,
+    FIX_DECISIONS,
     AgentResponseError,
+    build_fix_prompt,
+    build_merge_prompt,
     build_optimizer_prompt,
     build_planner_prompt,
     extract_taskq_json,
@@ -11,8 +13,8 @@ from taskq.explore.agent import (
     is_question_like,
     is_stalled_output,
     parse_command_template,
+    parse_fix_response,
     parse_planner_response,
-    parse_reviewer_response,
     render_command,
     render_prompt,
 )
@@ -46,6 +48,10 @@ def test_prompt_builders_accept_disabled_limits():
         'optimize', template='$change_scope', max_files=0, max_lines=0)
     build_optimizer_prompt(
         'optimize', {}, template='$change_scope', max_files=0, max_lines=0)
+    build_fix_prompt(
+        'optimize', {}, template='$change_scope', max_files=0, max_lines=0)
+    build_merge_prompt(
+        'optimize', {}, template='$change_scope', max_files=0, max_lines=0)
     with pytest.raises(ValueError, match='cannot be negative'):
         build_optimizer_prompt(
             'optimize', {}, template='$change_scope', max_files=-1)
@@ -59,7 +65,7 @@ def test_prompt_renderer_rejects_unknown_template_values():
 def test_extract_taskq_json_uses_last_marker_line_despite_trailing_output():
     assert extract_taskq_json(
         'Evidence above.\n'
-        'TASKQ_JSON: {"decision":"adjust"}\n'
+        'TASKQ_JSON: {"decision":"fixed"}\n'
         'TASKQ_JSON: {"decision":"accept"}\n'
         'tokens used: 123\n'
         '[taskq] job finished with exit code 0\n'
@@ -96,33 +102,33 @@ def test_parse_planner_response_validates_directions_and_count():
         parse_planner_response('TASKQ_JSON: {"directions":[{}]}')
 
 
-@pytest.mark.parametrize('decision', sorted(REVIEW_DECISIONS))
-def test_parse_reviewer_response_accepts_all_decisions(decision):
-    output = (
-        'TASKQ_JSON: {"decision":"%s","reason":"evidence supports it",'
-        '"next_direction":{"hypothesis":"try batching"}}' % decision
-    )
-
-    value = parse_reviewer_response(output)
-
-    assert value['decision'] == decision
-    assert value['evidence'] == []
-    assert value['memory_updates'] == []
-    assert value['next_direction']['hypothesis'] == 'try batching'
-
-
-def test_parse_reviewer_response_rejects_bad_decision_shape():
+def test_parse_fix_response_rejects_bad_decision_shape():
     with pytest.raises(AgentResponseError):
-        parse_reviewer_response(
+        parse_fix_response(
             'TASKQ_JSON: {"decision":"merge","reason":"looks good"}'
         )
     with pytest.raises(AgentResponseError):
-        parse_reviewer_response('TASKQ_JSON: {"decision":"accept"}')
+        parse_fix_response('TASKQ_JSON: {"decision":"accept"}')
     with pytest.raises(AgentResponseError):
-        parse_reviewer_response(
+        parse_fix_response(
             'TASKQ_JSON: {"decision":"accept","reason":"good",'
             '"next_direction":[]}'
         )
+
+
+@pytest.mark.parametrize('decision', sorted(FIX_DECISIONS))
+def test_parse_fix_response_accepts_all_decisions(decision):
+    output = (
+        'TASKQ_JSON: {"decision":"%s","reason":"assessment complete",'
+        '"evidence":["focused tests passed"]}' % decision
+    )
+
+    value = parse_fix_response(output)
+
+    assert value['decision'] == decision
+    assert value['evidence'] == ['focused tests passed']
+    assert value['memory_updates'] == []
+    assert value['next_direction'] is None
 
 
 def test_question_and_stall_detection():

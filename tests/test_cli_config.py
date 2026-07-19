@@ -31,7 +31,7 @@ def test_default_config_exposes_explore_phases():
 
     assert set(explore) == {
         'command', 'timeout', 'env', 'response_repair_prompt',
-        'planning', 'optimization', 'inspection', 'validation',
+        'planning', 'optimization', 'fix', 'validation',
         'merge', 'controller', 'initialization',
     }
     assert set(explore['initialization']) == {
@@ -41,7 +41,11 @@ def test_default_config_exposes_explore_phases():
     assert explore['timeout'] == 30 * 60
     assert explore['env'] == {}
     assert explore['optimization']['parallel'] == 4
-    assert explore['optimization']['max_adjustments'] == 3
+    assert explore['fix']['max_fixes'] == 3
+    assert explore['fix']['prompt'] == 'fix.md'
+    assert explore['merge']['prompt'] == 'merge.md'
+    assert 'adjust_prompt' not in explore['optimization']
+    assert 'review_prompt' not in explore['merge']
     assert explore['validation']['gpus'] == 0
     assert explore['merge']['max_accepted_attempts'] == 0
     assert explore['controller']['max_wall_time'] == 8 * 60 * 60
@@ -53,7 +57,7 @@ def test_default_config_exposes_explore_phases():
     assert explore['controller']['interval'] == 5
     assert explore['controller']['heartbeat_timeout'] == 30
     assert all('timeout' not in explore[phase] for phase in (
-        'planning', 'optimization', 'inspection', 'validation', 'merge'))
+        'planning', 'optimization', 'fix', 'validation', 'merge'))
 
 
 def test_load_config_uses_packaged_defaults_without_local_rc(tmp_path, monkeypatch):
@@ -68,6 +72,10 @@ def test_load_config_uses_packaged_defaults_without_local_rc(tmp_path, monkeypat
         'Resolve the in-progress Git integration')
     assert config['explore']['planning']['prompt'].startswith('Plan ')
     assert config['explore']['planning']['prompt'] != 'planning.md'
+    assert config['explore']['fix']['prompt'].startswith('Assess ')
+    assert '$artifacts' in config['explore']['fix']['prompt']
+    assert config['explore']['merge']['prompt'].startswith(
+        'Resolve the in-progress merge')
     assert config['explore']['initialization']['prompt'].startswith(
         'Configure ')
     assert '$objective_prompt' in config['explore']['initialization']['prompt']

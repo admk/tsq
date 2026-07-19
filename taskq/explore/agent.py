@@ -11,9 +11,8 @@ from typing import Any, Dict, List, Optional, Union
 
 
 DEFAULT_COMMAND_TEMPLATE = ['codex', 'exec', '{}']
-REVIEW_DECISIONS = frozenset({
+FIX_DECISIONS = frozenset({
     'accept',
-    'adjust',
     'abandon',
     'stop',
 })
@@ -88,41 +87,13 @@ def build_optimizer_prompt(
     direction: Any,
     *,
     template: str,
-    adjust_template: Optional[str] = None,
-    memory: Any = None,
-    artifacts: Any = None,
-    adjust: bool = False,
-    max_files: int = 5,
-    max_lines: int = 300,
-    **context: Any
-) -> str:
-    """Build a worktree mutation prompt for an initial or follow-up action."""
-    selected = adjust_template if adjust else template
-    if selected is None:
-        raise ValueError('adjustment prompt template is required')
-    return render_prompt(
-        selected,
-        objective=objective,
-        direction=direction,
-        memory=memory,
-        artifacts=artifacts,
-        context=context,
-        change_scope=_change_scope(max_files, max_lines) or 'unlimited',
-    )
-
-
-def build_reviewer_prompt(
-    objective: str,
-    direction: Any,
-    *,
-    template: str,
     memory: Any = None,
     artifacts: Any = None,
     max_files: int = 5,
     max_lines: int = 300,
     **context: Any
 ) -> str:
-    """Build a non-mutating prompt for an independent attempt review."""
+    """Build a worktree mutation prompt for the initial candidate."""
     return render_prompt(
         template,
         objective=objective,
@@ -134,7 +105,7 @@ def build_reviewer_prompt(
     )
 
 
-def build_rebase_prompt(
+def build_fix_prompt(
     objective: str,
     direction: Any,
     *,
@@ -145,7 +116,30 @@ def build_rebase_prompt(
     max_lines: int = 300,
     **context: Any
 ) -> str:
-    """Build a worktree prompt for resolving a rebase conflict."""
+    """Build a worktree prompt for assessing and repairing a candidate."""
+    return render_prompt(
+        template,
+        objective=objective,
+        direction=direction,
+        memory=memory,
+        artifacts=artifacts,
+        context=context,
+        change_scope=_change_scope(max_files, max_lines) or 'unlimited',
+    )
+
+
+def build_merge_prompt(
+    objective: str,
+    direction: Any,
+    *,
+    template: str,
+    memory: Any = None,
+    artifacts: Any = None,
+    max_files: int = 5,
+    max_lines: int = 300,
+    **context: Any
+) -> str:
+    """Build a worktree prompt for resolving an aggregate merge conflict."""
     return render_prompt(
         template,
         objective=objective,
@@ -229,18 +223,24 @@ def parse_planner_response(
     return directions
 
 
-def parse_reviewer_response(output: str) -> Dict[str, Any]:
-    """Validate and return a reviewer decision object."""
+def parse_fix_response(output: str) -> Dict[str, Any]:
+    """Validate and return a mutable fix decision object."""
+    return _parse_decision_response(output, FIX_DECISIONS, 'fix')
+
+
+def _parse_decision_response(
+    output: str, decisions: frozenset, role: str,
+) -> Dict[str, Any]:
     value = extract_taskq_json(output)
     decision = value.get('decision')
-    if decision not in REVIEW_DECISIONS:
+    if decision not in decisions:
         raise AgentResponseError(
-            'reviewer decision must be one of {}'.format(
-                ', '.join(sorted(REVIEW_DECISIONS))
+            '{} decision must be one of {}'.format(
+                role, ', '.join(sorted(decisions))
             )
         )
     if not _nonempty_text(value.get('reason')):
-        raise AgentResponseError('reviewer decision requires a reason')
+        raise AgentResponseError('{} decision requires a reason'.format(role))
 
     for key in ('evidence', 'memory_updates'):
         if key in value and not isinstance(value[key], list):

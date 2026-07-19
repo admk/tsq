@@ -15,11 +15,12 @@ one run of that profile against a Git target. Its **mainline** is the private
 branch where accepted work accumulates. A **baseline** is the exact mainline
 commit used as the current comparison point. A **direction** is one bounded,
 falsifiable optimization idea. An **attempt** or **candidate** is that
-direction implemented in an isolated worktree. An **adjustment** is
-a reviewer-requested retry of the same attempt. A **check** is a pass/fail
-command; a **score** is a numeric measurement compared with the baseline. An
-**asset** is an immutable, profile-supplied evaluator or data file made
-available only to validation.
+direction implemented in an isolated worktree. A **fix pass** assesses a
+candidate and available validation evidence, and may make one bounded
+correction in that same worktree.
+A **check** is a pass/fail command; a **score** is a numeric measurement compared
+with the baseline. An **asset** is an immutable, profile-supplied evaluator or
+data file made available only to validation.
 
 A campaign uses these phases and roles:
 
@@ -27,9 +28,12 @@ A campaign uses these phases and roles:
    are configured;
 2. **planning** proposes distinct directions without editing code;
 3. **optimization** implements candidate attempts in isolated worktrees;
-4. **validation** runs trusted checks and optional scoring on each candidate;
-5. **inspection** independently reviews the candidate plus validation evidence;
-6. **merge** rebases, reviews, and integrates accepted candidates serially.
+4. **validation**, when configured, runs trusted checks and optional scoring on each candidate;
+5. **fix** assesses the candidate plus validation evidence, makes a bounded
+   correction when needed, and accepts only from a later no-edit pass;
+6. **merge** snapshots and integrates accepted candidates serially, trying a
+   fast-forward and clean rebase before an aggregate merge, and invoking an
+   agent only when that final merge conflicts.
 
 ## Final campaign objective
 
@@ -72,11 +76,11 @@ The following keys are editable:
 
 - `explore.command` and `explore.timeout`: inherited defaults for phases.
 - `explore.planning.command` and `.timeout`: read-only direction planner.
-- `explore.optimization.command` and `.timeout`: candidate implementation and
-  adjustment agent.
-- `explore.inspection.command` and `.timeout`: independent candidate reviewer.
+- `explore.optimization.command` and `.timeout`: initial candidate implementation.
+- `explore.fix.command` and `.timeout`: candidate assessment and repair. When
+  omitted, these inherit the optimization command and timeout.
 - `explore.validation.timeout`: wall-time limit for the complete validation job.
-- `explore.merge.command` and `.timeout`: merge review and conflict rebase agent.
+- `explore.merge.command` and `.timeout`: aggregate merge-conflict resolver.
 
 Every agent command must be either a TOML array of argv strings or a shell-like
 string that splits into argv. It is executed directly without a shell and must
@@ -97,7 +101,7 @@ consistently by both wizard validation and campaign execution.
 
 `explore.env` is a TOML mapping of environment variable names to string values.
 Taskq resolves it when the campaign starts and sends the resulting overrides to
-every planner, optimizer, adjustment, reviewer, validator, and rebase job.
+every planner, optimizer, fix, validator, and resolver job.
 Names must match `[A-Za-z_][A-Za-z0-9_]*`; values must be strings. Do not store
 API keys, tokens, passwords, or other secrets in the profile. Names beginning
 with `TASKQ_` are reserved and cannot be configured.
@@ -145,13 +149,14 @@ into the profile. Never persist `TASKQ_INIT_WORKTREE`; that path is disposable.
 
 - `explore.optimization.parallel`: integer at least 1; maximum concurrent
   candidate attempts, additionally constrained by queue capacity.
-- `explore.optimization.max_adjustments`: non-negative integer; reviewer-driven
-  retries for one attempt. `0` means unlimited.
+- `explore.fix.max_fixes`: non-negative integer; edit-producing fix passes for
+  one attempt. A no-edit assessment does not consume the budget. `0` means
+  unlimited.
 - `explore.optimization.max_files`: non-negative integer; reject one optimizer
-  or adjustment mutation round that changes more distinct files. `0` means
+  or cumulative fixed candidate that changes more distinct files. `0` means
   unlimited.
 - `explore.optimization.max_lines`: non-negative integer; reject one optimizer
-  or adjustment mutation round whose added plus removed lines exceed the value.
+  or cumulative fixed candidate whose added plus removed lines exceed the value.
   `0` means unlimited.
 - `explore.optimization.protected`: TOML array of repository-relative fnmatch
   patterns candidates must never change. Keep `.tq/**`; protect tests,

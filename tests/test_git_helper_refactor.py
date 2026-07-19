@@ -39,6 +39,11 @@ def test_explore_reexports_shared_policy_free_helpers():
     assert explore_git.snapshot is shared_git.snapshot
     assert explore_git.diff is shared_git.diff
     assert explore_git.merge_ff is shared_git.merge_ff
+    assert explore_git.rebase is shared_git.rebase
+    assert explore_git.abort_rebase is shared_git.abort_rebase
+    assert explore_git.begin_no_ff_merge is shared_git.begin_no_ff_merge
+    assert explore_git.merge_in_progress is shared_git.merge_in_progress
+    assert explore_git.complete_merge is shared_git.complete_merge
 
 
 def test_explore_git_preserves_check_false_string_result(tmp_path):

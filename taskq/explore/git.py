@@ -5,14 +5,23 @@ from pathlib import Path
 
 from ..backends.base import BackendError
 from ..git import (
+    abort_rebase,
+    begin_no_ff_merge,
     changed_paths,
+    checkout_detached,
+    commit_parents,
+    complete_merge,
     diff,
     git as _git,
     is_clean,
     merge_ff,
+    merge_in_progress,
+    rebase,
+    rebase_in_progress,
     repository,
     repository_root,
     snapshot,
+    unmerged_paths,
 )
 
 
@@ -51,14 +60,18 @@ def protected_paths(paths, patterns):
     })
 
 
-def rebase(cwd, target):
-    result = _git(cwd, 'rebase', target, check=False)
-    return result.returncode == 0, (result.stdout + result.stderr).strip()
-
-
-def rebase_in_progress(cwd):
-    return any(Path(git(cwd, 'rev-parse', '--git-path', name)).exists()
-               for name in ('rebase-merge', 'rebase-apply'))
+def changed_line_count(cwd, base, head='HEAD'):
+    """Return exact added-plus-removed lines, or ``None`` for binary changes."""
+    output = git(
+        cwd, 'diff', '--numstat', '--no-ext-diff',
+        '{}..{}'.format(base, head))
+    total = 0
+    for line in output.splitlines():
+        added, removed, _path = line.split('\t', 2)
+        if added == '-' or removed == '-':
+            return None
+        total += int(added) + int(removed)
+    return total
 
 
 def campaign_id(objective):

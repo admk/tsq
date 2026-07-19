@@ -18,21 +18,52 @@ from ..backends.base import BackendError
 from ..common import dict_merge
 
 
-PROFILE_VERSION = 1
+PROFILE_VERSION = 3
 PROFILE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 OBJECTIVE_FILENAME = 'objective.md'
 PHASES = (
-    'planning', 'optimization', 'inspection', 'validation',
+    'planning', 'optimization', 'fix', 'validation',
     'merge', 'controller',
 )
+NON_INHERITED_SECTIONS = frozenset(PHASES + ('initialization',))
+COMMON_SETTINGS = frozenset({
+    'command', 'timeout', 'env',
+    'response_repair_prompt', 'response_repair_prompt_file',
+})
+SECTION_SETTINGS = {
+    'initialization': frozenset({
+        'command', 'timeout', 'prompt', 'repair_prompt',
+    }),
+    'planning': frozenset({
+        'command', 'timeout', 'prompt', 'prompt_file',
+        'response_repair_prompt', 'response_repair_prompt_file',
+    }),
+    'optimization': frozenset({
+        'command', 'timeout', 'prompt', 'prompt_file', 'parallel',
+        'max_files', 'max_lines', 'protected',
+    }),
+    'fix': frozenset({
+        'command', 'timeout', 'prompt', 'prompt_file', 'max_fixes',
+        'response_repair_prompt', 'response_repair_prompt_file',
+    }),
+    'validation': frozenset({
+        'timeout', 'gpus', 'checks', 'score', 'score_direction',
+        'min_improvement',
+    }),
+    'merge': frozenset({
+        'command', 'timeout', 'prompt', 'prompt_file',
+        'max_accepted_attempts',
+    }),
+    'controller': frozenset({
+        'interval', 'heartbeat_timeout', 'max_wall_time',
+    }),
+}
 PROMPTS = (
     ((), 'response_repair_prompt', 'response-repair.md'),
     (('planning',), 'prompt', 'planning.md'),
     (('optimization',), 'prompt', 'optimization.md'),
-    (('optimization',), 'adjust_prompt', 'adjustment.md'),
-    (('inspection',), 'prompt', 'inspection.md'),
-    (('merge',), 'review_prompt', 'merge-review.md'),
-    (('merge',), 'rebase_prompt', 'rebase.md'),
+    (('fix',), 'prompt', 'fix.md'),
+    (('merge',), 'prompt', 'merge.md'),
 )
 ASSET_MAX_FILES = 64
 ASSET_MAX_BYTES = 2 * 1024 * 1024
@@ -116,13 +147,49 @@ def delete_value(mapping, path):
         pass
 
 
+def _validate_workflow(explore):
+    allowed_top_level = COMMON_SETTINGS | set(SECTION_SETTINGS)
+    unknown = [
+        'explore.{}'.format(key)
+        for key in explore if key not in allowed_top_level
+    ]
+    for section, allowed in SECTION_SETTINGS.items():
+        value = explore.get(section)
+        if value is None:
+            continue
+        if not isinstance(value, dict):
+            raise BackendError(
+                'explore.{} must be a table'.format(section))
+        unknown.extend(
+            'explore.{}.{}'.format(section, key)
+            for key in value if key not in allowed)
+    if unknown:
+        raise BackendError(
+            'unknown exploration settings: {}'.format(
+                ', '.join(sorted(unknown))))
+
+
 def resolve_phases(explore):
     explore = _plain(explore)
-    common = {key: value for key, value in explore.items() if key not in PHASES}
-    return {
+    _validate_workflow(explore)
+    common = {
+        key: value for key, value in explore.items()
+        if key not in NON_INHERITED_SECTIONS
+    }
+    phases = {
         name: dict(common, **dict(explore.get(name) or {}))
         for name in PHASES
     }
+    # Fix mutates the same attempt, so it inherits the optimizer's command and
+    # timeout unless the profile explicitly overrides them.
+    optimization = dict(explore.get('optimization') or {})
+    fix = dict(common)
+    for key in ('command', 'timeout'):
+        if key in optimization:
+            fix[key] = optimization[key]
+    fix.update(dict(explore.get('fix') or {}))
+    phases['fix'] = fix
+    return phases
 
 
 @dataclass
@@ -187,13 +254,12 @@ class ExploreProfileStore:
         path = self.profile_dir(name)
         config_path = path / 'config.toml'
         if config_path.exists():
-            profile = self.load(name)
-            self._ensure_prompt_files(profile)
-            return profile
+            return self.load(name)
         path.mkdir(parents=True, exist_ok=True)
         explore = _plain(self.resolved_config.get('explore', {}))
         # Initialization is a local bootstrap facility, not campaign config.
         explore.pop('initialization', None)
+        _validate_workflow(explore)
         phases = resolve_phases(explore)
         prompt_dir = path / 'prompts'
         prompt_dir.mkdir(exist_ok=True)
@@ -227,6 +293,8 @@ class ExploreProfileStore:
     def _ensure_prompt_files(self, profile):
         explore = profile.document['explore']
         defaults = _plain(self.resolved_config.get('explore', {}))
+        defaults.pop('initialization', None)
+        _validate_workflow(defaults)
         phases = resolve_phases(defaults)
         changed = False
         for phase_path, key, filename in PROMPTS:
@@ -240,11 +308,14 @@ class ExploreProfileStore:
             prompt_path = self._safe_prompt_path(profile.path, relative)
             if prompt_path.exists():
                 continue
-            source = get_value(
-                phases[phase_path[0]] if phase_path else defaults, (key,))
+            source = target.pop(key, None)
+            if source is None:
+                source = get_value(
+                    phases[phase_path[0]] if phase_path else defaults, (key,))
             if not isinstance(source, str) or not source.strip():
                 raise BackendError('missing default exploration prompt: {}'.format(key))
             self._atomic_text(prompt_path, source.rstrip() + '\n')
+            changed = True
         if changed:
             self.save(profile)
 
@@ -259,27 +330,26 @@ class ExploreProfileStore:
         except tomlkit.exceptions.ParseError as error:
             raise BackendError('invalid profile {}: {}'.format(config_path, error)) from error
         metadata = document.get('profile') or {}
-        if metadata.get('name') != name or metadata.get('version') != PROFILE_VERSION:
+        if metadata.get('name') != name:
             raise BackendError('invalid profile metadata: {}'.format(config_path))
+        if metadata.get('version') != PROFILE_VERSION:
+            raise BackendError(
+                'exploration profile uses an unsupported workflow version; '
+                'run tq explore remove {} --yes, then tq explore init {}'.format(
+                    name, name))
+        unknown_metadata = set(metadata) - {
+            'version', 'name', 'complete', 'cursor'}
+        if unknown_metadata:
+            raise BackendError(
+                'invalid profile metadata keys: {}'.format(
+                    ', '.join(sorted(unknown_metadata))))
         if not isinstance(document.get('explore'), dict):
             raise BackendError('profile is missing [explore]: {}'.format(config_path))
+        _validate_workflow(document['explore'])
         profile = ExploreProfile(name, path, document)
-        self._migrate_objective(profile)
-        return profile
-
-    def _migrate_objective(self, profile):
-        marker = object()
-        legacy = profile.metadata.get('objective', marker)
-        path = profile.path / OBJECTIVE_FILENAME
-        if not path.exists():
-            if legacy is marker:
-                raise BackendError(
-                    'profile objective file not found: {}'.format(path))
-            self.save_objective(profile, legacy)
         self.read_objective(profile)
-        if legacy is not marker:
-            del profile.metadata['objective']
-            self.save(profile)
+        self._ensure_prompt_files(profile)
+        return profile
 
     def save(self, profile):
         self.save_document(profile.path, profile.document)
@@ -297,7 +367,11 @@ class ExploreProfileStore:
 
     def effective_config(self, profile):
         config = copy.deepcopy(self.resolved_config)
+        config_explore = _plain(config.get('explore', {}))
+        _validate_workflow(config_explore)
+        config['explore'] = config_explore
         profile_explore = _plain(profile.document['explore'])
+        _validate_workflow(profile_explore)
         for phase_path, key, _filename in PROMPTS:
             target = _nested(profile_explore, phase_path, create=True)
             file_key = key + '_file'
@@ -343,10 +417,11 @@ class ExploreProfileStore:
     @contextmanager
     def generation_lock(self, profile):
         """Serialize generation-state handoffs across threads and processes."""
+        name = self.validate_name(getattr(profile, 'name', profile))
         # Keep the lock outside the removable profile directory. Otherwise a
         # removal can unlink the locked inode and let an old worker acquire a
         # different lock while recreating the same profile path.
-        path = self.base / '.locks' / '{}.generation.lock'.format(profile.name)
+        path = self.base / '.locks' / '{}.generation.lock'.format(name)
         key = str(path.resolve())
         with self._generation_thread_locks_guard:
             thread_lock = self._generation_thread_locks.setdefault(
@@ -379,8 +454,10 @@ class ExploreProfileStore:
         path = self.profile_dir(name)
         if not path.exists():
             raise BackendError('exploration profile not found: {}'.format(name))
-        profile = self.load(name)
-        with self.generation_lock(profile):
+        if not path.is_dir():
+            raise BackendError(
+                'exploration profile is not a directory: {}'.format(path))
+        with self.generation_lock(name):
             shutil.rmtree(path)
 
     @staticmethod

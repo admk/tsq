@@ -74,20 +74,21 @@ def workflow_env(monkeypatch, tmp_path, repo):
         'explore': {
             'command': ['codex', 'exec', '{}'],
             'timeout': 1800,
-            'prompt': '$objective $context',
             'response_repair_prompt': '$original_prompt $error',
-            'planning': {},
+            'planning': {'prompt': '$objective $context'},
             'optimization': {
                 'command': ['optimizer', '{}'], 'parallel': 4,
-                'adjust_prompt': '$objective $artifacts',
-                'max_adjustments': 3, 'max_files': 5, 'max_lines': 300,
+                'prompt': '$objective $direction $context',
+                'max_files': 5, 'max_lines': 300,
                 'protected': ['.tq/**', 'tests/**'],
             },
-            'inspection': {},
+            'fix': {
+                'prompt': '$objective $artifacts $context',
+                'max_fixes': 3,
+            },
             'validation': {'gpus': 0, 'checks': [], 'min_improvement': 0},
             'merge': {
-                'review_prompt': '$objective $artifacts',
-                'rebase_prompt': '$objective $artifacts',
+                'prompt': '$objective $artifacts',
                 'max_accepted_attempts': 6,
             },
             'controller': {
@@ -120,7 +121,7 @@ def test_explore_action_is_registered_and_help_lists_subcommands(capsys):
     for option in (
         '--cmd', '--check', '--score', '--score-direction',
         '--min-improvement', '--protect', '--parallel',
-        '--max-adjustments', '--max-accepted-attempts', '--max-time',
+        '--max-fixes', '--max-accepted-attempts', '--max-time',
         '--max-files', '--max-lines',
     ):
         assert option not in output
@@ -134,7 +135,7 @@ def test_explore_action_is_registered_and_help_lists_subcommands(capsys):
     ['--min-improvement', '1'],
     ['--protect', 'fixtures/**'],
     ['--parallel', '2'],
-    ['--max-adjustments', '2'],
+    ['--max-fixes', '2'],
     ['--max-accepted-attempts', '2'],
     ['--max-time', '1h'],
     ['--max-files', '2'],
@@ -291,7 +292,7 @@ def test_explore_init_scaffolds_named_profile(
 
     profile = tmp_path / '.tq' / 'explore' / 'latency'
     assert (profile / 'config.toml').is_file()
-    assert len(list((profile / 'prompts').glob('*.md'))) == 7
+    assert len(list((profile / 'prompts').glob('*.md'))) == 5
     assert seen['backend'].name == 'dummy'
     assert capsys.readouterr().err == ''
 
@@ -312,8 +313,13 @@ def test_explore_remove_yes_deletes_profile_and_finished_runs(
             pass
 
         @staticmethod
-        def load(name):
-            return Profile()
+        def validate_name(name):
+            return name
+
+        @staticmethod
+        def profile_dir(name):
+            Profile.path.mkdir(parents=True, exist_ok=True)
+            return Profile.path
 
         @staticmethod
         def remove(name):
@@ -512,11 +518,11 @@ def test_phase_options_inherit_common_values_and_override_them(workflow_env):
     phases = campaign['config']['phases']
 
     assert phases['planning']['command'] == ['codex', 'exec', '{}']
-    assert phases['inspection']['command'] == ['codex', 'exec', '{}']
     assert phases['merge']['command'] == ['codex', 'exec', '{}']
     assert phases['optimization']['command'] == ['optimizer', '{}']
+    assert phases['fix']['command'] == ['optimizer', '{}']
     assert all(phases[name]['timeout'] == 1800 for name in (
-        'planning', 'optimization', 'inspection', 'validation', 'merge'))
+        'planning', 'optimization', 'fix', 'validation', 'merge'))
 
 
 def test_start_rejects_unknown_prompt_placeholders(workflow_env):
@@ -553,14 +559,15 @@ def test_zero_maximums_disable_campaign_caps(workflow_env):
     workflow, _, _ = workflow_env
     explore = workflow.config['explore']
     explore['optimization'].update({
-        'max_adjustments': 0, 'max_files': 0, 'max_lines': 0,
+        'max_files': 0, 'max_lines': 0,
     })
+    explore['fix']['max_fixes'] = 0
     explore['merge']['max_accepted_attempts'] = 0
     explore['controller']['max_wall_time'] = 0
 
     campaign = workflow.start('unbounded campaign')
 
-    assert campaign['budgets']['max_adjustments'] == 0
+    assert campaign['budgets']['max_fixes'] == 0
     assert campaign['budgets']['max_accepted_attempts'] == 0
     assert campaign['budgets']['max_wall_time'] == 0
     assert campaign['budgets']['deadline'] is None
@@ -570,7 +577,7 @@ def test_zero_maximums_disable_campaign_caps(workflow_env):
 
 
 @pytest.mark.parametrize(('phase', 'name'), [
-    ('optimization', 'max_adjustments'),
+    ('fix', 'max_fixes'),
     ('merge', 'max_accepted_attempts'),
     ('controller', 'max_wall_time'),
     ('optimization', 'max_files'),
@@ -624,6 +631,20 @@ def test_workflow_status_and_inspect_report_attempt_diff(
     assert len(inspected['attempts']) == 1
     assert '-value = 1' in inspected['attempts'][0]['diff']
     assert '+value = 2' in inspected['attempts'][0]['diff']
+
+    retained_patch = 'diff --git a/app.py b/app.py\n+value = 2\n'
+    with ExploreState(state_path) as state:
+        state.add_job(
+            campaign_id, 'fix-1', 'fix', attempt_id='attempt-1',
+            direction_id='direction-1', status='success',
+            metadata={'artifacts': {'diff': retained_patch}},
+        )
+        state.update_attempt(
+            'attempt-1', worktree=str(tmp_path / 'removed-attempt-worktree'))
+
+    inspected = workflow.inspect(campaign_id, 'attempt-1')
+
+    assert inspected['attempts'][0]['diff'] == retained_patch
 
 
 def test_status_inspect_and_lifecycle_actions_support_json_and_campaign_ids(

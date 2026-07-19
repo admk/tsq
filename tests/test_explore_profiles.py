@@ -9,7 +9,7 @@ import pytest
 from taskq.backends.base import BackendError
 from taskq.explore.agent import build_planner_prompt
 from taskq.explore.profiles import (
-    ExploreProfileStore, read_objective, write_objective,
+    ExploreProfileStore, read_objective, resolve_phases, write_objective,
 )
 from taskq.explore.wizard import (
     FIELDS, ExploreInitWizard, WizardAbort, _display_width, _render_text_line,
@@ -29,16 +29,17 @@ def resolved_config():
             'planning': {'prompt': 'plan $objective $direction_count'},
             'optimization': {
                 'prompt': 'optimize $objective $direction',
-                'adjust_prompt': 'adjust $objective $artifacts',
-                'parallel': 2, 'max_adjustments': 1,
+                'parallel': 2,
                 'max_files': 0, 'max_lines': 100,
                 'protected': ['tests/**'],
             },
-            'inspection': {'prompt': 'review $objective $artifacts'},
+            'fix': {
+                'prompt': 'fix $objective $artifacts',
+                'max_fixes': 1,
+            },
             'validation': {'gpus': 0, 'checks': [], 'min_improvement': 0},
             'merge': {
-                'review_prompt': 'merge review $objective $artifacts',
-                'rebase_prompt': 'rebase $objective $artifacts',
+                'prompt': 'merge $objective $artifacts',
                 'max_accepted_attempts': 0,
             },
             'controller': {
@@ -63,8 +64,8 @@ def test_profile_scaffolds_prompts_and_loads_effective_config(tmp_path):
     assert store.list() == ['reduce-latency']
     assert config['backend'] == 'tmux'
     assert config['explore']['planning']['prompt'].startswith('plan ')
-    assert config['explore']['merge']['rebase_prompt'].startswith('rebase ')
-    assert len(list((profile.path / 'prompts').glob('*.md'))) == 7
+    assert config['explore']['merge']['prompt'].startswith('merge ')
+    assert len(list((profile.path / 'prompts').glob('*.md'))) == 5
     assert 'prompt_file' in profile.document['explore']['planning']
     assert 'prompt' not in profile.document['explore']['planning']
 
@@ -99,22 +100,18 @@ def test_planning_prompt_includes_complete_objective_document(tmp_path):
     assert objective in prompt
 
 
-def test_profile_load_migrates_legacy_metadata_objective(tmp_path):
+def test_profile_load_rejects_metadata_objective_without_file(tmp_path):
     store = ExploreProfileStore(tmp_path, resolved_config())
     profile = store.create('legacy')
     (profile.path / 'objective.md').unlink()
     profile.metadata['objective'] = 'Legacy first line\n\nLegacy details.'
     store.save(profile)
 
-    migrated = store.load('legacy')
-
-    assert migrated.objective == 'Legacy first line\n\nLegacy details.'
-    assert 'objective' not in migrated.metadata
-    assert (migrated.path / 'objective.md').read_text(encoding='utf-8') == (
-        'Legacy first line\n\nLegacy details.\n')
+    with pytest.raises(BackendError, match='metadata keys: objective'):
+        store.load('legacy')
 
 
-def test_profile_load_keeps_objective_file_authoritative_over_legacy_metadata(
+def test_profile_load_rejects_unknown_metadata_with_objective_file(
     tmp_path,
 ):
     store = ExploreProfileStore(tmp_path, resolved_config())
@@ -123,10 +120,8 @@ def test_profile_load_keeps_objective_file_authoritative_over_legacy_metadata(
     profile.metadata['objective'] = 'Stale metadata objective'
     store.save(profile)
 
-    loaded = store.load('profile')
-
-    assert loaded.objective == 'Objective from file'
-    assert 'objective' not in loaded.metadata
+    with pytest.raises(BackendError, match='metadata keys: objective'):
+        store.load('profile')
 
 
 @pytest.mark.parametrize('value', ['', ' \n\t', None])
@@ -185,14 +180,75 @@ def test_profile_recreate_restores_only_missing_prompt(tmp_path):
     store = ExploreProfileStore(tmp_path, resolved_config())
     profile = store.create('profile')
     missing = profile.path / 'prompts' / 'planning.md'
-    preserved = profile.path / 'prompts' / 'inspection.md'
+    preserved = profile.path / 'prompts' / 'fix.md'
     missing.unlink()
-    preserved.write_text('custom review', encoding='utf-8')
+    preserved.write_text('custom fix', encoding='utf-8')
 
     store.create('profile')
 
     assert missing.read_text(encoding='utf-8').startswith('plan ')
-    assert preserved.read_text(encoding='utf-8') == 'custom review'
+    assert preserved.read_text(encoding='utf-8') == 'custom fix'
+
+
+def test_profile_rejects_legacy_workflow_version_with_recreate_hint(tmp_path):
+    store = ExploreProfileStore(tmp_path, resolved_config())
+    profile = store.create('legacy')
+    profile.metadata['version'] = 1
+    store.save(profile)
+
+    with pytest.raises(
+        BackendError,
+        match='tq explore remove legacy --yes.*tq explore init legacy',
+    ):
+        store.load('legacy')
+
+    store.remove('legacy')
+    assert not profile.path.exists()
+
+
+@pytest.mark.parametrize(('phase', 'key'), [
+    ('optimization', 'adjust_prompt'),
+    ('optimization', 'adjust_prompt_file'),
+    ('optimization', 'max_adjustments'),
+    ('merge', 'review_prompt'),
+    ('merge', 'review_prompt_file'),
+    ('merge', 'rebase_prompt'),
+    ('merge', 'rebase_prompt_file'),
+])
+def test_phase_resolution_rejects_removed_workflow_settings(phase, key):
+    explore = {
+        'command': ['common', '{}'],
+        'timeout': 30,
+        'optimization': {'command': ['writer', '{}'], 'timeout': 60},
+        'fix': {'prompt': 'fix prompt', 'max_fixes': 2},
+        'merge': {},
+    }
+    explore[phase][key] = 'legacy'
+
+    with pytest.raises(BackendError, match=key):
+        resolve_phases(explore)
+
+
+def test_phase_resolution_rejects_removed_inspection_phase():
+    with pytest.raises(BackendError, match='explore.inspection'):
+        resolve_phases({
+            'optimization': {},
+            'fix': {},
+            'inspection': {'prompt': 'legacy review prompt'},
+        })
+
+
+def test_fix_phase_inherits_optimizer_command_and_timeout():
+    phases = resolve_phases({
+        'command': ['common', '{}'],
+        'timeout': 30,
+        'optimization': {'command': ['writer', '{}'], 'timeout': 60},
+        'fix': {'prompt': 'fix prompt', 'max_fixes': 2},
+    })
+
+    assert phases['fix']['command'] == ['writer', '{}']
+    assert phases['fix']['timeout'] == 60
+    assert phases['planning']['command'] == ['common', '{}']
 
 
 @pytest.mark.parametrize('name', ['', '../escape', 'has space', '/absolute'])
@@ -694,6 +750,16 @@ def test_wizard_resumes_after_committed_radio_field(tmp_path):
 
 def test_wizard_does_not_onboard_controller_options():
     assert not any(field.path[:2] == ('explore', 'controller') for field in FIELDS)
+
+
+def test_wizard_exposes_fix_settings_and_hides_legacy_review_settings():
+    paths = {field.path for field in FIELDS}
+
+    assert ('explore', 'fix', 'command') in paths
+    assert ('explore', 'fix', 'timeout') in paths
+    assert ('explore', 'fix', 'max_fixes') in paths
+    assert ('explore', 'inspection', 'command') not in paths
+    assert ('explore', 'optimization', 'max_adjustments') not in paths
 
 
 def test_every_wizard_field_has_explanatory_comment():

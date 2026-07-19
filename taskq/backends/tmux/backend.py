@@ -813,15 +813,33 @@ class TmuxBackend(BackendBase):
         return out
 
     def mark_workflow_failed(self, info, reason=None, phase='workflow'):
-        """Mark an internal campaign agent job as a workflow-level failure."""
+        """Mark a managed campaign agent job as a workflow-level failure."""
         meta = self._refresh_meta(self._read_meta(info['id']))
         backend_meta = meta.get('metadata') or {}
         workflow_meta = backend_meta.get('workflow_metadata') or {}
-        managed_agent = (
+        role = backend_meta.get('role')
+        managed_control_agent = (
             meta.get('internal') is True
-            and meta.get('workspace_owner') == 'campaign'
-            and backend_meta.get('role') in {'planner', 'reviewer'}
+            and (
+                role == 'planner' or
+                (
+                    role == 'fix' and
+                    workflow_meta.get('response_only') is True and
+                    bool(backend_meta.get('campaign_id')) and
+                    bool(backend_meta.get('attempt_id'))
+                )
+            )
+        )
+        managed_fix_agent = (
+            meta.get('internal') is False
+            and role == 'fix'
+            and bool(backend_meta.get('campaign_id'))
+            and bool(backend_meta.get('attempt_id'))
+        )
+        managed_agent = (
+            meta.get('workspace_owner') == 'campaign'
             and workflow_meta.get('agent') is True
+            and (managed_control_agent or managed_fix_agent)
         )
         if not managed_agent:
             raise BackendError(

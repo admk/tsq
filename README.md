@@ -167,10 +167,11 @@ objective in `objective.md`, operational settings in `config.toml`, and editable
 Markdown prompts in `prompts/`. The initial text supplied to profile generation
 is a brief for the setup agent; the agent refines it against repository evidence
 and writes `objective.md` rather than treating that brief as the final objective.
-The objective may contain multiple Markdown paragraphs or lists. Existing
-profiles that stored an objective in `config.toml` are migrated to
-`objective.md` when loaded. Starting without a name opens the same profile
-picker. Edit a profile with `tq explore init NAME`.
+The objective may contain multiple Markdown paragraphs or lists. Profiles from
+older workflow versions are rejected; remove and recreate them with
+`tq explore remove NAME --yes` followed by `tq explore init NAME`. Starting
+without a name opens the same profile picker. Edit a current profile with
+`tq explore init NAME`.
 Removing a profile also removes its finished campaign history and memory, but
 is refused while an associated campaign is active.
 
@@ -180,14 +181,14 @@ Configuration is divided by execution phase:
 | --- | --- |
 | `planning` | Generate distinct directions without editing code. |
 | `optimization` | Make CPU-only implementation-code changes in worktrees. |
-| `inspection` | Independently review completed attempts. |
+| `fix` | Assess candidates and available validation evidence, then make bounded corrections. |
 | `validation` | Run trusted checks and comparative scoring. |
-| `merge` | Rebase, review, and serialize accepted attempts. |
+| `merge` | Snapshot and serialize accepted attempts; resolve aggregate merge conflicts when needed. |
 | `controller` | Schedule work, enforce the campaign deadline, and supervise heartbeats. |
 
 Agent instructions are TOML templates rather than Python constants. Configure
-`planning.prompt`, `optimization.prompt`, `optimization.adjust_prompt`,
-`inspection.prompt`, `merge.review_prompt`, and `merge.rebase_prompt`.
+`planning.prompt`, `optimization.prompt`, `fix.prompt`, and
+`merge.prompt`.
 Templates use `$name` placeholders such as `$objective`, `$direction`,
 `$memory`, `$artifacts`, `$context`, `$direction_count`, and `$change_scope`;
 write `$$` for a literal dollar sign. The shared
@@ -203,22 +204,31 @@ that can execute concurrently with minimal overlap or ordering dependencies.
 Optimizer jobs receive no GPUs and leave checks and benchmarks to the
 validation phase. Set `explore.validation.gpus` when those commands require
 GPU allocation.
-When an attempt finishes, a fresh reviewer autonomously inspects its status,
-diff, and trusted checks or scores, then accepts it, requests an adjustment,
-abandons it, or stops the campaign. Checks and scoring are optional, but
-when supplied they are hard acceptance gates and cannot be waived by agents.
-A failed candidate validation can be sent back for another optimization when
-the reviewer chooses `adjust`, up to `optimization.max_adjustments`; baseline
-validation failure instead fails the campaign.
+When configured, trusted validation runs after an attempt finishes. A fresh fix
+agent then inspects the current candidate, diff, and available validation
+evidence. It may make one bounded correction, abandon the attempt, stop the
+campaign, or accept an unchanged candidate. Any edit forces configured
+validation, when present, and a fresh fix pass; an agent cannot accept its own
+changes. Edit-producing passes are capped by `explore.fix.max_fixes`. Checks
+and scoring are optional, but when supplied they are hard acceptance gates and
+cannot be waived by agents. Baseline validation failure fails the campaign.
 
-Accepted attempts enter a FIFO merge queue. They are rebased, reviewed, and
-merged one at a time into a campaign mainline; conflicts are returned to an
-agent in the attempt worktree. Conflict resolution preserves current mainline
-behavior first and the accepted optimization second. If they are incompatible,
-the attempt branch is abandoned and the reason is recorded in campaign memory.
-While this queue is non-empty, existing work may finish, be reviewed, and
-receive adjustments, but no new direction starts. Once it drains,
-planning resumes from the updated mainline. The final mainline is
+Accepted attempts enter a FIFO merge queue. Before integration, taskq snapshots
+all tracked and non-ignored untracked changes in the attempt worktree. If that
+source already descends from the current campaign mainline, it is fast-forwarded
+directly. Otherwise taskq tries a rebase and fast-forwards a clean result.
+
+When a rebase conflicts, taskq aborts it and merges the complete original source
+onto the current mainline in a detached attempt worktree. A clean aggregate
+merge is committed immediately. If that merge conflicts, one resolver stages
+the combined resolution, taskq creates the merge commit, and the campaign
+mainline is fast-forwarded to it. There is no post-acceptance agent review,
+scope-gate pass, or validation job. Conflict resolution preserves current
+mainline behavior first and the accepted optimization second. If they are
+incompatible, the attempt is abandoned and the reason is recorded in campaign
+memory. While this queue is non-empty,
+existing work may finish validation or fix passes, but no new direction starts.
+Once it drains, planning resumes from the updated mainline. The final mainline is
 fast-forwarded automatically when safe. If the target has diverged, taskq
 prints the manual merge command and waits for the user to resolve conflicts.
 
@@ -264,12 +274,12 @@ timeout = 1800
 [explore.optimization]
 parallel = 4
 # Set any max_* value to 0 to disable that cap.
-max_adjustments = 3
 max_files = 0
 max_lines = 300
 protected = [".tq/**", "test/**", "tests/**", "benchmark/**", "benchmarks/**"]
 
-[explore.inspection]
+[explore.fix]
+max_fixes = 3
 
 [explore.validation]
 gpus = 0

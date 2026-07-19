@@ -247,6 +247,8 @@ def snapshot(cwd, message):
     git(
         cwd, '-c', 'user.name=taskq', '-c', 'user.email=taskq@localhost',
         'commit', '--no-gpg-sign', '--no-verify', '-m', message)
+    if not is_clean(cwd):
+        raise BackendError('snapshot did not leave a clean worktree')
     return resolve_commit(cwd), True
 
 
@@ -540,6 +542,87 @@ def cherry_pick_in_progress(cwd):
 def abort_cherry_pick(cwd):
     if cherry_pick_in_progress(cwd):
         git(cwd, 'cherry-pick', '--abort', check=False)
+
+
+def _git_state_path(cwd, name):
+    path = Path(git(cwd, 'rev-parse', '--git-path', name))
+    if not path.is_absolute():
+        path = Path(cwd) / path
+    return path.resolve()
+
+
+def rebase(cwd, target):
+    result = git(
+        cwd,
+        '-c', 'commit.gpgSign=false', '-c', 'core.hooksPath=/dev/null',
+        '-c', 'rebase.updateRefs=false', '-c', 'rerere.enabled=false',
+        '-c', 'rerere.autoupdate=false',
+        'rebase', '--no-update-refs', '--no-autostash', '--no-gpg-sign',
+        target, check=False)
+    output = (result.stdout + result.stderr).strip()
+    return result.returncode == 0, output
+
+
+def rebase_in_progress(cwd):
+    return any(
+        _git_state_path(cwd, name).exists()
+        for name in ('rebase-merge', 'rebase-apply')
+    )
+
+
+def abort_rebase(cwd):
+    if not rebase_in_progress(cwd):
+        return True, ''
+    result = git(cwd, 'rebase', '--abort', check=False)
+    output = (result.stdout + result.stderr).strip()
+    return result.returncode == 0, output
+
+
+def checkout_detached(cwd, commit):
+    git(
+        cwd, '-c', 'core.hooksPath=/dev/null',
+        'switch', '--detach', '--no-overwrite-ignore', commit)
+    return resolve_commit(cwd)
+
+
+def begin_no_ff_merge(cwd, source):
+    result = git(
+        cwd,
+        '-c', 'commit.gpgSign=false', '-c', 'core.hooksPath=/dev/null',
+        '-c', 'rerere.enabled=false', '-c', 'rerere.autoupdate=false',
+        'merge', '--no-ff', '--no-commit', '--no-edit', '--no-verify',
+        '--no-overwrite-ignore', source, check=False)
+    output = (result.stdout + result.stderr).strip()
+    return result.returncode == 0, output
+
+
+def merge_in_progress(cwd):
+    return _git_state_path(cwd, 'MERGE_HEAD').exists()
+
+
+def unmerged_paths(cwd):
+    output = git(cwd, 'diff', '--name-only', '--diff-filter=U', '-z')
+    return [path for path in output.split('\0') if path]
+
+
+def complete_merge(cwd, message):
+    if not merge_in_progress(cwd):
+        raise BackendError('no merge is in progress')
+    unresolved = unmerged_paths(cwd)
+    if unresolved:
+        raise BackendError(
+            'merge still has unresolved paths: {}'.format(', '.join(unresolved)))
+    git(
+        cwd,
+        '-c', 'user.name=taskq', '-c', 'user.email=taskq@localhost',
+        '-c', 'commit.gpgSign=false', '-c', 'core.hooksPath=/dev/null',
+        'commit', '--no-gpg-sign', '--no-verify', '-m', message)
+    return resolve_commit(cwd)
+
+
+def commit_parents(cwd, commit='HEAD'):
+    values = git(cwd, 'rev-list', '--parents', '-n', '1', commit).split()
+    return values[1:]
 
 
 def merge_ff(cwd, commit):

@@ -294,7 +294,15 @@ class Field:
             return bool(get_value(document, ('explore', 'validation', 'score')))
         value = get_value(document, self.path)
         if value is None and self.fallback:
-            value = get_value(document, self.fallback)
+            fallbacks = (
+                self.fallback
+                if isinstance(self.fallback[0], tuple)
+                else (self.fallback,)
+            )
+            for path in fallbacks:
+                value = get_value(document, path)
+                if value is not None:
+                    break
         if value is None and self.parser is _environment:
             value = {}
         return value
@@ -359,13 +367,25 @@ FIELDS = (
           comment='Workspace-write agent command that implements each attempt.'),
     Field('Optimization timeout', ('explore', 'optimization', 'timeout'), _positive,
           fallback=('explore', 'timeout'),
-          comment='Maximum runtime for one optimization or adjustment job.'),
+          comment='Maximum runtime for one initial candidate implementation.'),
     Field('Parallel attempts', ('explore', 'optimization', 'parallel'),
           lambda value: _integer(value, 1),
           comment='Maximum optimization attempts allowed to run concurrently.'),
-    Field('Maximum adjustments (0 is unlimited)',
-          ('explore', 'optimization', 'max_adjustments'), _integer,
-          comment='Reviewer-requested retries per attempt; 0 removes the cap.'),
+    Field('Fix command', ('explore', 'fix', 'command'), _command,
+          fallback=(
+              ('explore', 'optimization', 'command'),
+              ('explore', 'command'),
+          ),
+          comment='Workspace-write agent that assesses and repairs a candidate.'),
+    Field('Fix timeout', ('explore', 'fix', 'timeout'), _positive,
+          fallback=(
+              ('explore', 'optimization', 'timeout'),
+              ('explore', 'timeout'),
+          ),
+          comment='Maximum runtime for one candidate fix pass.'),
+    Field('Maximum fix rounds (0 is unlimited)',
+          ('explore', 'fix', 'max_fixes'), _integer,
+          comment='Edit-producing fix passes per attempt; 0 removes the cap.'),
     Field('Maximum changed files (0 is unlimited)',
           ('explore', 'optimization', 'max_files'), _integer,
           comment='Reject candidates changing more files; 0 removes the cap.'),
@@ -375,12 +395,6 @@ FIELDS = (
     Field('Protected paths (JSON array)',
           ('explore', 'optimization', 'protected'), _string_list,
           comment='Repository-relative patterns that candidates must not modify.'),
-    Field('Inspection command', ('explore', 'inspection', 'command'), _command,
-          fallback=('explore', 'command'),
-          comment='Agent command that independently reviews completed attempts.'),
-    Field('Inspection timeout', ('explore', 'inspection', 'timeout'), _positive,
-          fallback=('explore', 'timeout'),
-          comment='Maximum runtime for one inspection job.'),
     Field('Validation timeout', ('explore', 'validation', 'timeout'), _positive,
           fallback=('explore', 'timeout'),
           comment='Maximum runtime for each trusted validation job.'),
@@ -405,10 +419,10 @@ FIELDS = (
           comment='Required absolute score improvement over the baseline.'),
     Field('Merge command', ('explore', 'merge', 'command'), _command,
           fallback=('explore', 'command'),
-          comment='Agent command used for merge review and conflict rebasing.'),
+          comment='Workspace-write agent used only to resolve merge conflicts.'),
     Field('Merge timeout', ('explore', 'merge', 'timeout'), _positive,
           fallback=('explore', 'timeout'),
-          comment='Maximum runtime for one merge review or rebase job.'),
+          comment='Maximum runtime for one aggregate conflict-resolution job.'),
     Field('Maximum accepted attempts (0 is unlimited)',
           ('explore', 'merge', 'max_accepted_attempts'), _integer,
           comment='Candidates integrated during this campaign; 0 removes the cap.'),
@@ -606,12 +620,7 @@ class ExploreInitWizard:
                 objective_prompt=generation.get('objective_prompt'))
 
         status = generation.get('status')
-        legacy_pending = (
-            status == 'pending' and
-            not generation.get('run_token') and
-            generation.get('backend_job_id') is None
-        )
-        editable = status in {'draft', 'ready', 'interrupted'} or legacy_pending
+        editable = status in {'draft', 'ready', 'interrupted'}
         active = (
             status in {'queued', 'running', 'pending'} and
             bool(generation.get('run_token') or

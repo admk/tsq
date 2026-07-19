@@ -78,19 +78,11 @@ def state_root(git_common_dir, environ=None):
 
 def _resolver(config):
     merge = dict(config.get('merge') or {})
-    explore = dict(config.get('explore') or {})
-    explore_merge = dict(explore.get('merge') or {})
-    command = merge.get('command')
-    if command is None:
-        command = explore_merge.get('command', explore.get('command', DEFAULT_COMMAND))
-    prompt = merge.get('conflict_prompt')
-    if prompt is None:
-        prompt = explore_merge.get('rebase_prompt', DEFAULT_CONFLICT_PROMPT)
+    command = merge.get('command', DEFAULT_COMMAND)
+    prompt = merge.get('conflict_prompt', DEFAULT_CONFLICT_PROMPT)
     if not isinstance(prompt, str) or not prompt.strip():
         raise BackendError('merge conflict prompt must be non-empty text')
-    timeout = merge.get('timeout')
-    if timeout is None:
-        timeout = explore_merge.get('timeout', explore.get('timeout', 1800))
+    timeout = merge.get('timeout', 1800)
     try:
         timeout = float(timeout)
     except (TypeError, ValueError) as error:

@@ -1050,6 +1050,69 @@ def test_tmux_marks_managed_response_validation_failure(tmux_backend):
         {'id': job_id}, phase='response_validation')['status'] == 'failed'
 
 
+def test_tmux_marks_mutable_fix_response_validation_failure(tmux_backend):
+    job_id = int(tmux_backend.add(
+        'echo hi', gpus=0, slots=1, internal=False,
+        workspace_owner='campaign', metadata={
+            'campaign_id': 'c1',
+            'attempt_id': 'a1',
+            'role': 'fix',
+            'workflow_metadata': {'agent': True},
+        },
+    ))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update({'status': 'success', 'exitcode': 0})
+    tmux_backend._write_meta(meta)
+
+    info = tmux_backend.mark_workflow_failed(
+        {'id': job_id},
+        reason='invalid fix response: missing TASKQ_JSON',
+        phase='response_validation',
+    )
+
+    assert info['status'] == 'failed'
+    assert info['command_exitcode'] == 0
+    assert info['failure_phase'] == 'response_validation'
+
+
+def test_tmux_marks_response_only_fix_validation_failure(tmux_backend):
+    job_id = int(tmux_backend.add(
+        'echo hi', gpus=0, slots=0, internal=True,
+        workspace_owner='campaign', metadata={
+            'campaign_id': 'c1',
+            'attempt_id': 'a1',
+            'role': 'fix',
+            'workflow_metadata': {'agent': True, 'response_only': True},
+        },
+    ))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update({'status': 'success', 'exitcode': 0})
+    tmux_backend._write_meta(meta)
+
+    info = tmux_backend.mark_workflow_failed(
+        {'id': job_id}, phase='response_validation')
+
+    assert info['status'] == 'failed'
+    assert info['command_exitcode'] == 0
+
+
+def test_tmux_refuses_unscoped_mutable_fix_workflow_failure(tmux_backend):
+    job_id = int(tmux_backend.add(
+        'echo hi', gpus=0, slots=1, internal=False,
+        workspace_owner='campaign', metadata={
+            'campaign_id': 'c1',
+            'role': 'fix',
+            'workflow_metadata': {'agent': True},
+        },
+    ))
+    meta = read_meta(tmux_backend, job_id)
+    meta.update({'status': 'success', 'exitcode': 0})
+    tmux_backend._write_meta(meta)
+
+    with pytest.raises(BackendError, match='not a managed'):
+        tmux_backend.mark_workflow_failed({'id': job_id})
+
+
 def test_tmux_refuses_workflow_failure_for_ordinary_job(tmux_backend):
     job_id = int(tmux_backend.add('echo hi', gpus=0, slots=1))
     meta = read_meta(tmux_backend, job_id)

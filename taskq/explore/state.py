@@ -1,5 +1,6 @@
 """Durable project-wide state for autonomous exploration campaigns."""
 
+import fcntl
 import json
 import sqlite3
 import threading
@@ -8,11 +9,22 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 _JSON_COLUMNS = {
     'budgets', 'config', 'metadata', 'payload', 'evidence',
     'memory_updates', 'next_direction', 'provenance', 'result',
+}
+
+_MERGE_HEAD_PREDECESSORS = {
+    'fast_forwarding': {'snapshotting'},
+    'landing': {'fast_forwarding', 'rebasing', 'merge_fallback', 'resolving'},
+}
+_MERGE_HEAD_DOWNSTREAM = {
+    'fast_forwarding': {
+        'fast_forwarding', 'rebasing', 'merge_fallback', 'resolving', 'landing',
+    },
+    'landing': {'landing'},
 }
 
 _SCHEMA = r"""
@@ -59,7 +71,7 @@ CREATE TABLE attempts (
     head TEXT NOT NULL,
     current_job_id TEXT,
     status TEXT NOT NULL DEFAULT 'active',
-    adjustments INTEGER NOT NULL DEFAULT 0,
+    fix_count INTEGER NOT NULL DEFAULT 0,
     stale_count INTEGER NOT NULL DEFAULT 0,
     metadata TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
@@ -98,13 +110,13 @@ CREATE TABLE terminal_events (
     UNIQUE (job_id, kind)
 );
 
-CREATE TABLE reviewer_decisions (
+CREATE TABLE decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     campaign_id TEXT NOT NULL REFERENCES campaigns(id),
     attempt_id TEXT REFERENCES attempts(id),
     event_id INTEGER REFERENCES terminal_events(id),
     merge_request_id INTEGER,
-    phase TEXT NOT NULL DEFAULT 'inspection',
+    phase TEXT NOT NULL DEFAULT 'fix',
     generation INTEGER NOT NULL DEFAULT 0,
     decision TEXT NOT NULL,
     reason TEXT NOT NULL DEFAULT '',
@@ -196,6 +208,18 @@ CREATE INDEX audit_campaign_idx
 """
 
 
+def _schema_statements():
+    statement = []
+    for line in _SCHEMA.splitlines():
+        statement.append(line)
+        sql = '\n'.join(statement).strip()
+        if sql and sqlite3.complete_statement(sql):
+            yield sql
+            statement = []
+    if any(line.strip() for line in statement):
+        raise RuntimeError('incomplete explore state schema')
+
+
 def _timestamp(value=None):
     if isinstance(value, str):
         return value
@@ -243,21 +267,36 @@ class ExploreState:
         self._db.row_factory = sqlite3.Row
         self._db.execute('PRAGMA foreign_keys = ON')
         self._db.execute('PRAGMA busy_timeout = 30000')
-        self._db.execute('PRAGMA journal_mode = WAL')
-        self._db.execute('PRAGMA synchronous = NORMAL')
-        self._initialize()
+        try:
+            self._initialize()
+        except Exception:
+            self._db.close()
+            raise
 
     def _initialize(self):
-        version = self._db.execute('PRAGMA user_version').fetchone()[0]
-        if version > SCHEMA_VERSION:
-            raise RuntimeError(
-                'explore state schema {} is newer than supported schema {}'.format(
-                    version, SCHEMA_VERSION))
-        if version == 0:
-            self._db.executescript(_SCHEMA)
-            self._db.execute('PRAGMA user_version = {}'.format(SCHEMA_VERSION))
-        elif version < SCHEMA_VERSION:
-            raise RuntimeError('no migration available for schema {}'.format(version))
+        lock_path = self.path.with_name(self.path.name + '.init.lock')
+        with open(lock_path, 'a', encoding='utf-8') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                self._db.execute('PRAGMA journal_mode = WAL')
+                self._db.execute('PRAGMA synchronous = NORMAL')
+                with self._transaction() as db:
+                    version = db.execute('PRAGMA user_version').fetchone()[0]
+                    if version > SCHEMA_VERSION:
+                        raise RuntimeError(
+                            'explore state schema {} is newer than supported '
+                            'schema {}'.format(version, SCHEMA_VERSION))
+                    if version == 0:
+                        for statement in _schema_statements():
+                            db.execute(statement)
+                        db.execute(
+                            'PRAGMA user_version = {}'.format(SCHEMA_VERSION))
+                    elif version < SCHEMA_VERSION:
+                        raise RuntimeError(
+                            'explore state schema {} is unsupported; recreate '
+                            'the campaign'.format(version))
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
     @property
     def schema_version(self):
@@ -415,7 +454,7 @@ class ExploreState:
                     'cannot delete active campaigns: {}'.format(
                         ', '.join(sorted(unfinished))))
             for table in (
-                'reviewer_decisions', 'findings', 'merge_requests',
+                'decisions', 'findings', 'merge_requests',
                 'terminal_events', 'jobs', 'attempts', 'directions',
                 'outbox', 'audit_events',
             ):
@@ -501,7 +540,7 @@ class ExploreState:
     def add_attempt(
         self, campaign_id, attempt_id, direction_id, branch, worktree,
         base_head, head=None, status='active', current_job_id=None,
-        adjustments=0, stale_count=0, metadata=None, now=None,
+        fix_count=0, stale_count=0, metadata=None, now=None,
     ):
         now = _timestamp(now)
         head = base_head if head is None else head
@@ -509,11 +548,11 @@ class ExploreState:
             db.execute(
                 'INSERT INTO attempts '
                 '(id, campaign_id, direction_id, branch, worktree, base_head, '
-                'head, current_job_id, status, adjustments, stale_count, '
+                'head, current_job_id, status, fix_count, stale_count, '
                 'metadata, created_at, updated_at) '
                 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (attempt_id, campaign_id, direction_id, branch, str(worktree),
-                 base_head, head, current_job_id, status, adjustments,
+                 base_head, head, current_job_id, status, fix_count,
                  stale_count, _dump(metadata or {}), now, now),
             )
             self._audit(db, campaign_id, 'attempt.added',
@@ -546,13 +585,13 @@ class ExploreState:
     def update_attempt(self, attempt_id, **changes):
         allowed = {
             'direction_id', 'branch', 'worktree', 'base_head', 'head',
-            'current_job_id', 'status', 'adjustments', 'stale_count', 'metadata',
+            'current_job_id', 'status', 'fix_count', 'stale_count', 'metadata',
         }
         return self._update_entity(
             'attempts', attempt_id, changes, allowed, {'metadata'},
             'attempt.updated')
 
-    def bump_attempt(self, attempt_id, adjustments=0, stale_count=0, **changes):
+    def bump_attempt(self, attempt_id, fixes=0, stale_count=0, **changes):
         allowed = {
             'direction_id', 'branch', 'worktree', 'base_head', 'head',
             'current_job_id', 'status', 'metadata',
@@ -560,7 +599,7 @@ class ExploreState:
         values = self._changed(changes, allowed, {'metadata'})
         now = _timestamp()
         assignments = [
-            'adjustments = adjustments + ?',
+            'fix_count = fix_count + ?',
             'stale_count = stale_count + ?',
         ]
         assignments.extend('{} = ?'.format(key) for key in values)
@@ -573,12 +612,12 @@ class ExploreState:
             db.execute(
                 'UPDATE attempts SET {}, updated_at = ? WHERE id = ?'.format(
                     ', '.join(assignments)),
-                [adjustments, stale_count] + list(values.values()) +
+                [fixes, stale_count] + list(values.values()) +
                 [now, attempt_id],
             )
             self._audit(db, attempt['campaign_id'], 'attempt.updated', {
                 'attempt_id': attempt_id,
-                'adjustments_delta': adjustments,
+                'fixes_delta': fixes,
                 'stale_count_delta': stale_count,
             }, now)
             return _row(db.execute(
@@ -659,7 +698,7 @@ class ExploreState:
     def add_terminal_event(
         self, job_id, status, payload=None, kind='terminal', now=None,
     ):
-        """Record one inspection event per job/kind and update the job atomically."""
+        """Record one terminal event per job/kind and update the job atomically."""
         now = _timestamp(now)
         job_id = str(job_id)
         with self._transaction() as db:
@@ -765,7 +804,7 @@ class ExploreState:
                 (now, now, event['job_id']),
             )
             self._audit(
-                db, event['campaign_id'], 'inspection.completed',
+                db, event['campaign_id'], 'event.completed',
                 {'event_id': event_id, 'status': status}, now,
             )
             return _row(db.execute(
@@ -783,6 +822,7 @@ class ExploreState:
 
     def record_mutation_event(
         self, event_id, attempt_id, head, stale_count, artifacts, now=None,
+        status='fixing', fix_count=None,
     ):
         """Atomically persist a mutation snapshot and its replay evidence."""
         now = _timestamp(now)
@@ -798,10 +838,15 @@ class ExploreState:
             db.execute(
                 'UPDATE terminal_events SET payload = ? WHERE id = ?',
                 (_dump(payload), event_id))
+            assignments = ['head = ?', 'status = ?', 'stale_count = ?']
+            values = [head, status, stale_count]
+            if fix_count is not None:
+                assignments.append('fix_count = ?')
+                values.append(int(fix_count))
             db.execute(
-                "UPDATE attempts SET head = ?, status = 'reviewing', "
-                'stale_count = ?, updated_at = ? WHERE id = ?',
-                (head, stale_count, now, attempt_id))
+                'UPDATE attempts SET {}, updated_at = ? WHERE id = ?'.format(
+                    ', '.join(assignments)),
+                values + [now, attempt_id])
             self._audit(
                 db, event['campaign_id'], 'mutation.recorded',
                 {'event_id': event_id, 'attempt_id': attempt_id, 'head': head}, now)
@@ -811,7 +856,7 @@ class ExploreState:
 
     def add_decision(
         self, campaign_id, decision, attempt_id=None, event_id=None,
-        merge_request_id=None, phase='inspection', generation=0, reason='',
+        merge_request_id=None, phase='fix', generation=0, reason='',
         evidence=None, memory_updates=None, next_direction=None, metadata=None,
         dedupe_key=None, now=None,
     ):
@@ -820,7 +865,7 @@ class ExploreState:
             dedupe_key = 'event:{}'.format(event_id)
         with self._transaction() as db:
             cursor = db.execute(
-                'INSERT INTO reviewer_decisions '
+                'INSERT INTO decisions '
                 '(campaign_id, attempt_id, event_id, merge_request_id, phase, '
                 'generation, decision, reason, evidence, memory_updates, '
                 'next_direction, metadata, dedupe_key, created_at) '
@@ -835,18 +880,18 @@ class ExploreState:
             if cursor.rowcount:
                 decision_id = cursor.lastrowid
                 self._audit(
-                    db, campaign_id, 'review.decision',
+                    db, campaign_id, 'fix.decision',
                     {'decision_id': decision_id, 'decision': decision}, now,
                 )
             elif dedupe_key is not None:
                 decision_id = db.execute(
-                    'SELECT id FROM reviewer_decisions WHERE dedupe_key = ?',
+                    'SELECT id FROM decisions WHERE dedupe_key = ?',
                     (dedupe_key,),
                 ).fetchone()['id']
             else:
-                raise sqlite3.IntegrityError('duplicate reviewer decision')
+                raise sqlite3.IntegrityError('duplicate decision')
             return _row(db.execute(
-                'SELECT * FROM reviewer_decisions WHERE id = ?', (decision_id,)
+                'SELECT * FROM decisions WHERE id = ?', (decision_id,)
             ).fetchone())
 
     def list_decisions(
@@ -862,13 +907,13 @@ class ExploreState:
                 params.append(value)
         where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
         return self._fetchall(
-            'SELECT * FROM reviewer_decisions{} ORDER BY id'.format(where),
+            'SELECT * FROM decisions{} ORDER BY id'.format(where),
             params,
         )
 
     def get_decision(self, decision_id):
         return self._fetchone(
-            'SELECT * FROM reviewer_decisions WHERE id = ?', (decision_id,))
+            'SELECT * FROM decisions WHERE id = ?', (decision_id,))
 
     def update_decision(self, decision_id, **changes):
         allowed = {
@@ -877,14 +922,15 @@ class ExploreState:
             'next_direction', 'metadata', 'dedupe_key',
         }
         return self._update_entity(
-            'reviewer_decisions', decision_id, changes, allowed,
+            'decisions', decision_id, changes, allowed,
             {'evidence', 'memory_updates', 'next_direction', 'metadata'},
-            'review.updated', updated_at=False)
+            'decision.updated', updated_at=False)
 
     def enqueue_merge_request(
         self, campaign_id, attempt_id, head, accepted_at=None, metadata=None,
         dedupe_key=None,
     ):
+        """Atomically mark an exact attempt head accepted and enqueue it."""
         accepted_at = _timestamp(accepted_at)
         dedupe_key = dedupe_key or '{}:{}'.format(attempt_id, head)
         with self._transaction() as db:
@@ -906,6 +952,16 @@ class ExploreState:
                  _dump(metadata or {}), dedupe_key),
             )
             request_id = cursor.lastrowid
+            updated = db.execute(
+                "UPDATE attempts SET status = 'merge_queued', updated_at = ? "
+                "WHERE id = ? AND campaign_id = ? AND head = ? AND "
+                "status IN ('active', 'fixing')",
+                (accepted_at, attempt_id, campaign_id, head),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(
+                    'attempt is not eligible for merge queueing: {}'.format(
+                        attempt_id))
             payload = {
                 'merge_request_id': request_id, 'attempt_id': attempt_id,
                 'accepted_seq': sequence,
@@ -968,27 +1024,133 @@ class ExploreState:
                 'SELECT * FROM merge_requests WHERE id = ?', (row['id'],)
             ).fetchone())
 
-    def release_merge_request(self, request_id, result=None):
-        return self.update_merge_request(
-            request_id, status='queued', claimed_by=None, claimed_at=None,
-            claim_expires_at=None, result=result)
-
-    def complete_merge_request(
-        self, request_id, status, result=None, now=None,
+    def record_merge_head(
+        self, request_id, attempt_id, expected_head, head, metadata, now=None,
     ):
-        if status not in {'merged', 'rejected', 'deferred', 'failed', 'cancelled'}:
-            raise ValueError('invalid merge completion status: {}'.format(status))
+        """Atomically advance the exact attempt and merge-request head."""
+        metadata = dict(metadata or {})
+        stage = metadata.get('stage')
+        if stage not in _MERGE_HEAD_PREDECESSORS:
+            raise ValueError('invalid merge head stage: {}'.format(stage))
         now = _timestamp(now)
         with self._transaction() as db:
             request = db.execute(
-                'SELECT campaign_id FROM merge_requests WHERE id = ?',
-                (request_id,),
+                'SELECT * FROM merge_requests WHERE id = ?', (request_id,)
             ).fetchone()
             if request is None:
                 raise KeyError(request_id)
+            if request['status'] != 'processing':
+                raise ValueError(
+                    'merge request is not processing: {}'.format(request_id))
+            if request['attempt_id'] != attempt_id:
+                raise ValueError(
+                    'merge request does not belong to attempt: {}'.format(
+                        attempt_id))
+            attempt = db.execute(
+                'SELECT campaign_id, head, status FROM attempts WHERE id = ?',
+                (attempt_id,),
+            ).fetchone()
+            if attempt is None:
+                raise KeyError(attempt_id)
+            if (attempt['campaign_id'] != request['campaign_id'] or
+                    attempt['status'] != 'merge_queued'):
+                raise ValueError(
+                    'attempt is not eligible for merge integration: {}'.format(
+                        attempt_id))
+
+            current_metadata = json.loads(request['metadata'])
+            current_stage = current_metadata.get('stage')
+            heads_match = request['head'] == head and attempt['head'] == head
+            if heads_match and current_stage in _MERGE_HEAD_DOWNSTREAM[stage]:
+                return _row(request)
+            if current_stage not in _MERGE_HEAD_PREDECESSORS[stage]:
+                raise ValueError(
+                    'merge request cannot advance from stage {} to {}: {}'.format(
+                        current_stage, stage, request_id))
+            if (request['head'] != expected_head or
+                    attempt['head'] != expected_head):
+                raise ValueError(
+                    'merge source head changed for request: {}'.format(
+                        request_id))
+
+            db.execute(
+                'UPDATE attempts SET head = ?, updated_at = ? WHERE id = ?',
+                (head, now, attempt_id))
+            db.execute(
+                'UPDATE merge_requests SET head = ?, metadata = ? WHERE id = ?',
+                (head, _dump(metadata), request_id))
+            self._audit(db, request['campaign_id'], 'merge.head_recorded', {
+                'merge_request_id': request_id,
+                'attempt_id': attempt_id,
+                'previous_head': expected_head,
+                'head': head,
+                'stage': stage,
+            }, now)
+            return _row(db.execute(
+                'SELECT * FROM merge_requests WHERE id = ?', (request_id,)
+            ).fetchone())
+
+    def abandon_merge_request(
+        self, request_id, status, result=None, now=None,
+    ):
+        """Atomically terminate a merge and abandon its attempt and direction."""
+        if status not in {'rejected', 'failed', 'cancelled'}:
+            raise ValueError(
+                'invalid abandoned merge status: {}'.format(status))
+        now = _timestamp(now)
+        with self._transaction() as db:
+            request = db.execute(
+                'SELECT * FROM merge_requests WHERE id = ?', (request_id,)
+            ).fetchone()
+            if request is None:
+                raise KeyError(request_id)
+            attempt = db.execute(
+                'SELECT campaign_id, direction_id, status FROM attempts '
+                'WHERE id = ?', (request['attempt_id'],),
+            ).fetchone()
+            if attempt is None:
+                raise KeyError(request['attempt_id'])
+            direction = db.execute(
+                'SELECT campaign_id, status FROM directions WHERE id = ?',
+                (attempt['direction_id'],),
+            ).fetchone()
+            if direction is None:
+                raise KeyError(attempt['direction_id'])
+            if (attempt['campaign_id'] != request['campaign_id'] or
+                    direction['campaign_id'] != request['campaign_id']):
+                raise ValueError(
+                    'merge request ownership is inconsistent: {}'.format(
+                        request_id))
+
+            already_abandoned = (
+                request['status'] == status and
+                attempt['status'] == 'abandoned' and
+                direction['status'] == 'abandoned')
+            if already_abandoned:
+                return _row(request)
+            if request['status'] not in {'queued', 'processing', status}:
+                raise ValueError(
+                    'merge request cannot be abandoned from status {}: {}'
+                    .format(request['status'], request_id))
+            if attempt['status'] not in {'merge_queued', 'abandoned'}:
+                raise ValueError(
+                    'merge attempt cannot be abandoned from status {}: {}'
+                    .format(attempt['status'], request['attempt_id']))
+            if direction['status'] in {'accepted'}:
+                raise ValueError(
+                    'accepted direction cannot be abandoned: {}'.format(
+                        attempt['direction_id']))
+
+            db.execute(
+                "UPDATE attempts SET status = 'abandoned', updated_at = ? "
+                'WHERE id = ?', (now, request['attempt_id']))
+            db.execute(
+                "UPDATE directions SET status = 'abandoned', updated_at = ? "
+                'WHERE id = ?', (now, attempt['direction_id']))
             db.execute(
                 'UPDATE merge_requests SET status = ?, result = ?, '
-                'completed_at = ?, claim_expires_at = NULL WHERE id = ?',
+                'completed_at = ?, claimed_by = NULL, claimed_at = NULL, '
+                'claim_expires_at = NULL WHERE id = ?',
                 (status, _dump(result) if result is not None else None,
                  now, request_id),
             )
@@ -1011,16 +1173,51 @@ class ExploreState:
             ).fetchone()
             if request is None:
                 raise KeyError(request_id)
-            if request['status'] == 'merged':
-                return _row(request)
             attempt = db.execute(
-                'SELECT direction_id FROM attempts WHERE id = ?',
+                'SELECT campaign_id, direction_id, head, status FROM attempts '
+                'WHERE id = ?',
                 (request['attempt_id'],),
             ).fetchone()
+            if attempt is None:
+                raise KeyError(request['attempt_id'])
+            direction = db.execute(
+                'SELECT campaign_id, status FROM directions WHERE id = ?',
+                (attempt['direction_id'],),
+            ).fetchone()
+            if direction is None:
+                raise KeyError(attempt['direction_id'])
             campaign = db.execute(
-                'SELECT generation, config FROM campaigns WHERE id = ?',
+                'SELECT generation, mainline_head, config FROM campaigns '
+                'WHERE id = ?',
                 (request['campaign_id'],),
             ).fetchone()
+            if campaign is None:
+                raise KeyError(request['campaign_id'])
+            if (attempt['campaign_id'] != request['campaign_id'] or
+                    direction['campaign_id'] != request['campaign_id']):
+                raise ValueError(
+                    'merge request ownership is inconsistent: {}'.format(
+                        request_id))
+            if head != request['head']:
+                raise ValueError(
+                    'merged head does not match merge request: {}'.format(
+                        request_id))
+            if request['status'] == 'merged':
+                if (attempt['head'] != head or
+                        attempt['status'] != 'merged' or
+                        direction['status'] != 'accepted' or
+                        campaign['mainline_head'] != head):
+                    raise ValueError(
+                        'merged request state is inconsistent: {}'.format(
+                            request_id))
+                return _row(request)
+            if request['status'] != 'processing':
+                raise ValueError(
+                    'merge request is not processing: {}'.format(request_id))
+            if attempt['head'] != head or attempt['status'] != 'merge_queued':
+                raise ValueError(
+                    'attempt is not eligible for merge finalization: {}'.format(
+                        request['attempt_id']))
             config = (
                 _dump(campaign_config) if campaign_config is not None
                 else campaign['config'])
@@ -1038,7 +1235,8 @@ class ExploreState:
                 'WHERE id = ?', (now, attempt['direction_id']))
             db.execute(
                 "UPDATE merge_requests SET status = 'merged', result = ?, "
-                'completed_at = ?, claim_expires_at = NULL WHERE id = ?',
+                'completed_at = ?, claimed_by = NULL, claimed_at = NULL, '
+                'claim_expires_at = NULL WHERE id = ?',
                 (_dump(result or {'head': head}), now, request_id),
             )
             self._audit(
@@ -1240,7 +1438,7 @@ class ExploreState:
         with self._lock:
             for table in (
                 'directions', 'attempts', 'jobs', 'terminal_events',
-                'reviewer_decisions', 'merge_requests', 'findings', 'outbox',
+                'decisions', 'merge_requests', 'findings', 'outbox',
             ):
                 result[table] = self._db.execute(
                     'SELECT COUNT(*) FROM {} WHERE campaign_id = ?'.format(table),

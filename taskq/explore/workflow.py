@@ -15,6 +15,7 @@ from .git import campaign_id, diff, ensure_local_exclude, repository, require_cl
 from .state import ExploreState
 from .assets import copy_assets, inventory
 from .environment import EnvironmentConfigError, resolve_environment
+from .profiles import resolve_phases
 
 
 def _plain(value):
@@ -104,22 +105,11 @@ class ExploreWorkflow:
                 explore.get('env', {}), root, inherited_environment)
         except EnvironmentConfigError as error:
             raise BackendError(str(error)) from error
-        phase_names = (
-            'planning', 'optimization', 'inspection', 'validation',
-            'merge', 'controller', 'initialization')
-        common = {
-            key: value for key, value in explore.items()
-            if key not in phase_names
-        }
-        phases = {
-            name: dict(common, **dict(explore.get(name) or {}))
-            for name in phase_names if name != 'initialization'
-        }
+        phases = resolve_phases(explore)
         try:
             commands = {
                 name: parse_command_template(phases[name].get('command'))
-                for name in (
-                    'planning', 'optimization', 'inspection', 'merge')
+                for name in ('planning', 'optimization', 'fix', 'merge')
             }
         except (TypeError, ValueError) as error:
             raise BackendError(str(error)) from error
@@ -149,11 +139,11 @@ class ExploreWorkflow:
                 root, mainline_branch, mainline_worktree, target_head)
             try:
                 optimization = phases['optimization']
+                fix = phases['fix']
                 controller = phases['controller']
                 merge = phases['merge']
                 parallel = int(optimization.get('parallel', 4))
-                max_adjustments = int(
-                    optimization.get('max_adjustments', 3))
+                max_fixes = int(fix.get('max_fixes', 3))
                 max_accepted_attempts = int(
                     merge.get('max_accepted_attempts', 6))
                 max_time = _duration(controller.get('max_wall_time', 28800))
@@ -167,7 +157,7 @@ class ExploreWorkflow:
                 timeouts = {
                     name: float(phases[name].get('timeout', 1800))
                     for name in (
-                        'planning', 'optimization', 'inspection', 'validation',
+                        'planning', 'optimization', 'fix', 'validation',
                         'merge')
                 }
             except (TypeError, ValueError) as error:
@@ -177,7 +167,7 @@ class ExploreWorkflow:
                    list(timeouts.values())) <= 0:
                 raise BackendError(
                     'parallelism and controller limits must be positive')
-            if min(max_adjustments, max_accepted_attempts, max_time,
+            if min(max_fixes, max_accepted_attempts, max_time,
                    max_files, max_lines) < 0:
                 raise BackendError('exploration maximums cannot be negative')
             if validation_gpus < 0:
@@ -186,7 +176,7 @@ class ExploreWorkflow:
                 raise BackendError('minimum improvement cannot be negative')
             budgets = {
                 'parallel': parallel,
-                'max_adjustments': max_adjustments,
+                'max_fixes': max_fixes,
                 'max_accepted_attempts': max_accepted_attempts,
                 'max_wall_time': max_time,
                 'deadline': time.time() + max_time if max_time else None,
@@ -237,21 +227,18 @@ class ExploreWorkflow:
                         'command': commands['optimization'],
                         'prompt': _required_text(
                             optimization, 'prompt', 'optimization'),
-                        'adjust_prompt': _required_text(
-                            optimization, 'adjust_prompt', 'optimization'),
                         'max_files': max_files,
                         'max_lines': max_lines,
                         'protected_paths': list(dict.fromkeys(protected)),
                         'timeout': timeouts['optimization'],
                     },
-                    'inspection': {
-                        'command': commands['inspection'],
+                    'fix': {
+                        'command': commands['fix'],
                         'prompt': _required_text(
-                            phases['inspection'], 'prompt', 'inspection'),
+                            fix, 'prompt', 'fix'),
                         'response_repair_prompt': _required_text(
-                            phases['inspection'], 'response_repair_prompt',
-                            'inspection'),
-                        'timeout': timeouts['inspection'],
+                            fix, 'response_repair_prompt', 'fix'),
+                        'timeout': timeouts['fix'],
                     },
                     'validation': {
                         'gpus': validation_gpus,
@@ -263,12 +250,7 @@ class ExploreWorkflow:
                     },
                     'merge': {
                         'command': commands['merge'],
-                        'prompt': _required_text(
-                            merge, 'review_prompt', 'merge'),
-                        'rebase_prompt': _required_text(
-                            merge, 'rebase_prompt', 'merge'),
-                        'response_repair_prompt': _required_text(
-                            merge, 'response_repair_prompt', 'merge'),
+                        'prompt': _required_text(merge, 'prompt', 'merge'),
                         'timeout': timeouts['merge'],
                     },
                     'controller': {
@@ -394,11 +376,15 @@ class ExploreWorkflow:
                 if Path(item['worktree']).is_dir():
                     patch = diff(item['worktree'], item['base_head'], item['head'])
                 if not patch:
-                    reviews = state.list_jobs(
-                        attempt_id=item['id'], role='reviewer')
-                    if reviews:
-                        patch = reviews[-1]['metadata'].get(
+                    artifact_jobs = [
+                        job for job in state.list_jobs(attempt_id=item['id'])
+                        if job['role'] in {'optimizer', 'fix'}
+                    ]
+                    for job in reversed(artifact_jobs):
+                        patch = job['metadata'].get(
                             'artifacts', {}).get('diff', '')
+                        if patch:
+                            break
                 result.append(dict(item, diff=patch))
             return {'campaign': _public_campaign(value), 'attempts': result}
 

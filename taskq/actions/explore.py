@@ -78,9 +78,13 @@ class ExploreAction(ActionBase):
         if action == 'remove':
             if not args.value:
                 raise CLIError('tq explore remove requires a profile name')
-            profile = store.load(args.value)
+            name = store.validate_name(args.value)
+            profile_path = store.profile_dir(name)
+            if not profile_path.is_dir():
+                raise CLIError(
+                    'exploration profile not found: {}'.format(name))
             workflow = ExploreWorkflow(self.backend, self.backend.config)
-            campaigns = workflow.profile_campaigns(root, profile.name)
+            campaigns = workflow.profile_campaigns(root, name)
             active = [
                 campaign['id'] for campaign in campaigns
                 if campaign['status'] not in {'completed', 'failed'}]
@@ -92,19 +96,19 @@ class ExploreAction(ActionBase):
                     raise CLIError('non-interactive removal requires --yes')
                 summary = (
                     '{}\n{} finished campaign(s) and their stored memory will '
-                    'also be removed.'.format(profile.path, len(campaigns)))
+                    'also be removed.'.format(profile_path, len(campaigns)))
                 try:
-                    approved = confirm_remove(profile.name, summary)
+                    approved = confirm_remove(name, summary)
                 except WizardAbort:
                     return 130
                 if not approved:
                     print('Removal cancelled.')
                     return 0
             removed = workflow.remove_finished_profile_campaigns(
-                root, profile.name)
-            store.remove(profile.name)
+                root, name)
+            store.remove(name)
             print('Removed profile {} and {} finished campaign(s).'.format(
-                profile.name, len(removed)))
+                name, len(removed)))
             return 0
         workflow = ExploreWorkflow(self.backend, self.backend.config)
         if action is None:

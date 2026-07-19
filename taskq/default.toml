@@ -54,7 +54,7 @@ timeout = 1800
 # Environment overrides sent to every campaign phase. Values may reference
 # inherited variables and ${TASKQ_REPO_ROOT}, resolved when a campaign starts.
 env = {}
-# Used after a planner or reviewer returns an invalid structured response.
+# Used after a planner or fix agent returns an invalid structured response.
 response_repair_prompt = "response-repair.md"
 
 [explore.initialization]
@@ -70,15 +70,12 @@ repair_prompt = "initialization-repair.md"
 command = ["codex", "exec", "--ephemeral", "--sandbox", "read-only", "{}"]
 prompt = "planning.md"
 
-# Create and adjust candidate changes in isolated worktrees.
+# Create candidate changes in isolated worktrees.
 [explore.optimization]
 command = ["codex", "exec", "--ephemeral", "--sandbox", "workspace-write", "{}"]
 prompt = "optimization.md"
-adjust_prompt = "adjustment.md"
 # Maximum simultaneously active attempts, additionally limited by queue slots.
 parallel = 4
-# Maximum reviewer-requested adjustment rounds per attempt.
-max_adjustments = 3
 # Hard acceptance caps for distinct files and added plus removed lines.
 max_files = 0
 max_lines = 300
@@ -91,10 +88,13 @@ protected = [
     "benchmarks/**",
 ]
 
-# Independently review every completed optimization attempt.
-[explore.inspection]
-command = ["codex", "exec", "--ephemeral", "--sandbox", "workspace-write", "{}"]
-prompt = "inspection.md"
+# Assess a validated candidate and make bounded corrections when needed. The
+# command and timeout inherit from optimization unless explicitly overridden.
+[explore.fix]
+prompt = "fix.md"
+# Maximum edit-producing fix rounds per attempt. A no-edit assessment does not
+# consume this budget; 0 disables the cap.
+max_fixes = 3
 
 # Run trusted acceptance gates in disposable exact-commit worktrees.
 [explore.validation]
@@ -109,10 +109,10 @@ checks = []
 # Required absolute improvement in the score's own units.
 min_improvement = 0.0
 
-# Serialize accepted attempts through rebase, review, and merge.
+# Serialize accepted attempts through snapshot, fast-forward, rebase, and merge.
 [explore.merge]
-review_prompt = "merge-review.md"
-rebase_prompt = "rebase.md"
+command = ["codex", "exec", "--ephemeral", "--sandbox", "workspace-write", "{}"]
+prompt = "merge.md"
 # Maximum attempts incorporated into the campaign mainline.
 max_accepted_attempts = 0
 
